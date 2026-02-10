@@ -1,0 +1,16 @@
+{
+  "name": "ez-ralph-loop",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun run build.ts",
+    "build:current": "bun build ./index.ts --compile --outfile ./dist/ez-ralph-loop"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

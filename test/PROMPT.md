@@ -1,0 +1,1 @@
+read test/test.txt and output it

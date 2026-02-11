@@ -1,15 +1,7 @@
 # ez-ralph-loop
 
-To install dependencies:
+## Install
 
 ```bash
-bun install
+curl -fsSL https://raw.githubusercontent.com/Metroxe/ez-ralph-loop/main/install.sh | bash
 ```
-
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.8. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.

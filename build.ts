@@ -8,7 +8,7 @@ const targets = [
   { name: "linux-x64", label: "Linux (x86_64)" },
 ];
 
-const entrypoint = "./index.ts";
+const entrypoint = "./src/index.ts";
 const outDir = "./dist";
 const binName = "ez-ralph-loop";
 

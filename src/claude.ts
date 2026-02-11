@@ -35,7 +35,7 @@ export async function runClaudeIteration(
   const promptContent = await promptFile.text();
 
   // Use a temp debug file to capture MCP connection errors
-  const debugFile = `/tmp/ez-ralph-loop-debug-${iteration}-${Date.now()}.log`;
+  const debugFile = `/tmp/cig-loop-debug-${iteration}-${Date.now()}.log`;
 
   // Build command args
   const args: string[] = [

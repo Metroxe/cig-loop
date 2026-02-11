@@ -9,7 +9,7 @@ export interface TokenUsage {
 }
 
 /**
- * Result from a single iteration of the ralph loop.
+ * Result from a single iteration of the cig loop.
  */
 export interface IterationResult {
   /** 1-based iteration number */
@@ -46,7 +46,7 @@ export interface CumulativeStats {
 }
 
 /**
- * Resolved configuration for a ralph loop run.
+ * Resolved configuration for a cig loop run.
  * All fields are populated after CLI arg parsing + interactive prompts.
  */
 export interface LoopConfig {

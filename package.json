@@ -1,11 +1,11 @@
 {
-  "name": "ez-ralph-loop",
+  "name": "cig-loop",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "bun run build.ts",
-    "build:current": "bun build ./src/index.ts --compile --outfile ./dist/ez-ralph-loop"
+    "build:current": "bun build ./src/index.ts --compile --outfile ./dist/cig-loop"
   },
   "devDependencies": {
     "@types/bun": "latest",

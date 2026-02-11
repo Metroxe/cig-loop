@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 /**
- * ez-ralph-loop
+ * cig-loop
  *
- * A CLI for running a "ralph loop" - repeatedly invoking Claude Code
+ * A CLI for running a "cig loop" - repeatedly invoking Claude Code
  * with a prompt file, with rich streaming output, progress tracking,
  * cumulative cost tracking, and optional sentinel string detection.
  */
@@ -20,8 +20,8 @@ import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpIn
 // ─── CLI Arg Parsing ───────────────────────────────────────────────────
 
 const program = new Command()
-  .name("ez-ralph-loop")
-  .description("Run a ralph loop - repeatedly invoke Claude Code with a prompt file")
+  .name("cig-loop")
+  .description("Run a cig loop - repeatedly invoke Claude Code with a prompt file")
   .version("1.0.0")
   .option("-p, --prompt <path>", "path to prompt file", "./PROMPT.md")
   .option("-i, --iterations <number>", "number of iterations (0 = infinite)", "10")
@@ -255,7 +255,7 @@ async function gatherConfig(): Promise<LoopConfig> {
   }
 
   // Interactive mode via Clack
-  p.intro(chalk.bgCyan.black(" ez-ralph-loop "));
+  p.intro(chalk.bgCyan.black(" cig-loop "));
 
   // Phase 1: core settings (group prompt)
   const core = await p.group(
@@ -506,7 +506,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
 // ─── Re-run Command Builder ────────────────────────────────────────────
 
 function buildRerunCommand(config: LoopConfig): string {
-  const parts = ["ez-ralph-loop"];
+  const parts = ["cig-loop"];
 
   parts.push("-p", JSON.stringify(config.promptPath));
   parts.push("-i", String(config.iterations));
@@ -593,7 +593,7 @@ async function validateConfig(config: LoopConfig): Promise<void> {
   }
 }
 
-// ─── Ralph Loop ────────────────────────────────────────────────────────
+// ─── Cig Loop ──────────────────────────────────────────────────────────
 
 async function runLoop(config: LoopConfig): Promise<void> {
   const footer = new StickyFooter(config.logFile);
@@ -721,7 +721,7 @@ function printFinalSummary(
   const cols = process.stdout.columns || 80;
   console.log("");
   console.log(chalk.green("━".repeat(cols)));
-  console.log(chalk.bold.green("  ✓ Ralph Loop Complete"));
+  console.log(chalk.bold.green("  ✓ Cig Loop Complete"));
   console.log("");
   const totalLabel = config.iterations === 0
     ? `${cumulative.completedIterations} (infinite mode)`

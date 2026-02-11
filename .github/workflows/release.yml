@@ -69,7 +69,7 @@ jobs:
           name: ${{ steps.next_version.outputs.tag }}
           generate_release_notes: true
           files: |
-            dist/ez-ralph-loop-darwin-arm64
-            dist/ez-ralph-loop-darwin-x64
-            dist/ez-ralph-loop-linux-arm64
-            dist/ez-ralph-loop-linux-x64
+            dist/cig-loop-darwin-arm64
+            dist/cig-loop-darwin-x64
+            dist/cig-loop-linux-arm64
+            dist/cig-loop-linux-x64

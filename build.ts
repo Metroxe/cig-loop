@@ -10,7 +10,7 @@ const targets = [
 
 const entrypoint = "./src/index.ts";
 const outDir = "./dist";
-const binName = "ez-ralph-loop";
+const binName = "cig-loop";
 
 await mkdir(outDir, { recursive: true });
 

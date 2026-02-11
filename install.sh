@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO="Metroxe/ez-ralph-loop"
-BIN_NAME="ez-ralph-loop"
+REPO="Metroxe/cig-loop"
+BIN_NAME="cig-loop"
 
 # Detect OS
 OS="$(uname -s)"

@@ -6,7 +6,7 @@
  * backed by a React component tree that Ink manages.
  */
 
-import React, { useState, useEffect, useSyncExternalStore } from "react";
+import React, { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import { render, Box, Text, Static } from "ink";
 import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
@@ -127,6 +127,79 @@ function progressBar(current: number, total: number, width = 20): string {
   return "█".repeat(filled) + "░".repeat(empty) + ` ${pct}%`;
 }
 
+// ─── Smoking Cigarette ────────────────────────────────────────────────
+
+const SMOKE_CYCLE = [
+  ")( )(",
+  "( )( ",
+  " )()(",
+  "() ( ",
+  " )( )",
+  "( )((",
+  ")( ) ",
+  " ()( ",
+  ")(  (",
+  "( )()",
+  " )(()",
+  "() ( ",
+];
+const EMBER_CYCLE = ["·:", ":·", "·.", ".:", ":.", "·:"];
+const SMOKE_HEIGHT = 3;
+const SMOKE_DRIFT = 1;
+const BURN_DURATION_MS = 2 * 60 * 1000;
+const PAPER_FULL = 18;
+
+function SmokingCigarette() {
+  const startTime = useRef(Date.now());
+  const [frame, setFrame] = useState(0);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFrame((f) => (f + 1) % SMOKE_CYCLE.length);
+      setNow(Date.now());
+    }, 400);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Burn progress — loops back to a fresh cigarette when fully out
+  const elapsed = (now - startTime.current) % BURN_DURATION_MS;
+  const burnProgress = elapsed / BURN_DURATION_MS;
+  const paperLen = Math.max(0, Math.round(PAPER_FULL * (1 - burnProgress)));
+
+  // Flickering ember
+  const ember = EMBER_CYCLE[frame % EMBER_CYCLE.length]!;
+
+  // Smoke drifts to top-left
+  const bottomPad = (SMOKE_HEIGHT - 1) * SMOKE_DRIFT;
+  const cigPad = bottomPad + 3;
+  const smokeLines: string[] = [];
+  for (let i = 0; i < SMOKE_HEIGHT; i++) {
+    smokeLines.push(
+      " ".repeat(i * SMOKE_DRIFT) +
+        SMOKE_CYCLE[(frame + i) % SMOKE_CYCLE.length]!
+    );
+  }
+
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      {smokeLines.map((line, i) => (
+        <Text key={i} dimColor>
+          {line}
+        </Text>
+      ))}
+      <Text>
+        {" ".repeat(cigPad)}
+        <Text color="#FF6B35">{ember}</Text>
+        {paperLen > 0 ? (
+          <Text color="#F0E8D8">{"▓".repeat(paperLen)}</Text>
+        ) : null}
+        <Text color="#CD853F">{"▒".repeat(7)}</Text>
+      </Text>
+    </Box>
+  );
+}
+
 // ─── Footer Component ─────────────────────────────────────────────────
 
 function Footer({
@@ -170,12 +243,23 @@ function Footer({
     line3 = " Totals:   --";
   }
 
+  const isWide = cols >= 90;
+
   return (
     <Box flexDirection="column">
       <Text dimColor>{"━".repeat(cols)}</Text>
-      <Text bold>{line1}</Text>
-      <Text color="cyan">{line2}</Text>
-      <Text color="yellow">{line3}</Text>
+      <Box
+        flexDirection={isWide ? "row" : "column"}
+        alignItems={isWide ? "center" : undefined}
+      >
+        <Box flexDirection="column" flexGrow={1}>
+          <Text bold>{line1}</Text>
+          <Text color="cyan">{line2}</Text>
+          <Text color="yellow">{line3}</Text>
+          <Text dimColor>{" Usage: https://claude.ai/settings/usage"}</Text>
+        </Box>
+        <SmokingCigarette />
+      </Box>
     </Box>
   );
 }

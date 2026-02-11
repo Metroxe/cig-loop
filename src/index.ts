@@ -17,6 +17,14 @@ import { StickyFooter } from "./terminal.js";
 import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo } from "./types.js";
 
+// ─── Subcommand Routing ────────────────────────────────────────────────
+
+if (process.argv[2] === "boilerplate") {
+  const { runBoilerplate } = await import("./boilerplate.js");
+  await runBoilerplate();
+  process.exit(0);
+}
+
 // ─── CLI Arg Parsing ───────────────────────────────────────────────────
 
 const program = new Command()

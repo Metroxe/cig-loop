@@ -53,7 +53,7 @@ fi
 # Download the binary
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
 echo "Downloading from ${DOWNLOAD_URL}..."
-curl -fsSL -o "./${BIN_NAME}" "$DOWNLOAD_URL"
+curl -f#L -o "./${BIN_NAME}" "$DOWNLOAD_URL"
 
 # Make executable
 chmod +x "./${BIN_NAME}"

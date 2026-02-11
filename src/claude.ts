@@ -109,6 +109,7 @@ export async function runClaudeIteration(
     appendOutput: (text: string) => { output += text; },
     hasStreamedContent: false,
     markdownStreamer: new MarkdownStreamer(),
+    lastTextBlock: "",
   };
 
   // Read stdout line by line
@@ -207,12 +208,13 @@ export async function runClaudeIteration(
   // Clean up temp debug file
   try { await Bun.file(debugFile).exists() && Bun.$`rm -f ${debugFile}`.quiet(); } catch { /* ignore */ }
 
-  // Check sentinel strings
+  // Check sentinel strings against the final text block only
+  const finalText = state.lastTextBlock;
   const stopStringDetected = config.stopString
-    ? output.includes(config.stopString)
+    ? finalText.includes(config.stopString)
     : false;
   const continueStringDetected = config.continueString
-    ? output.includes(config.continueString)
+    ? finalText.includes(config.continueString)
     : false;
 
   return {
@@ -225,6 +227,7 @@ export async function runClaudeIteration(
     output,
     stopStringDetected,
     continueStringDetected,
+    finalResponse: finalText,
   };
 }
 
@@ -237,6 +240,8 @@ interface ProcessingState {
   /** Track whether we've seen streaming deltas (to avoid double-printing from assistant events) */
   hasStreamedContent: boolean;
   markdownStreamer: MarkdownStreamer;
+  /** Content of the most recent text block (reset on each new text block start) */
+  lastTextBlock: string;
 }
 
 async function processEvent(
@@ -392,6 +397,7 @@ function handleBlockStart(
     case "text":
       // Reset markdown streamer so state doesn't leak across tool use gaps
       state.markdownStreamer.reset();
+      state.lastTextBlock = "";
       footer.writeln("");
       blocks[idx] = { type: "text", content: "" };
       break;
@@ -423,8 +429,9 @@ function handleBlockDelta(
       if (text) {
         state.hasStreamedContent = true;
         const sanitized = state.markdownStreamer.feed(text);
-        if (sanitized) footer.write(greenLines(sanitized));
-        state.appendOutput(text); // raw text for sentinel detection
+        if (sanitized) footer.write(orangeLines(sanitized));
+        state.appendOutput(text);
+        state.lastTextBlock += text; // track most recent text block for sentinel detection
         if (blocks[idx]) {
           blocks[idx].content = (blocks[idx].content || "") + text;
         }
@@ -436,11 +443,11 @@ function handleBlockDelta(
       const thinking = delta.thinking as string;
       if (thinking) {
         if (!state.thinkingStarted) {
-          footer.write(chalk.dim.italic("\n"));
+          footer.write("\n");
           state.setThinkingStarted(true);
         }
-        // Stream thinking content with dim italic styling
-        footer.write(chalk.dim.italic(thinking));
+        // Stream thinking content — explicit gray color per-line to prevent ANSI bleed
+        footer.write(dimLines(thinking));
         state.appendOutput(thinking);
         if (blocks[idx]) {
           blocks[idx].content = (blocks[idx].content || "") + thinking;
@@ -481,6 +488,7 @@ function handleBlockStop(
       const preview = formatToolResult(block.content);
       if (preview) {
         footer.writeln(preview);
+        footer.writeln(""); // blank line after tool result
       }
       break;
     }
@@ -496,8 +504,9 @@ function handleBlockStop(
     case "text": {
       // Flush any remaining buffered markdown
       const remaining = state.markdownStreamer.flush();
-      if (remaining) footer.write(greenLines(remaining));
-      footer.writeln(""); // end with newline
+      if (remaining) footer.write(orangeLines(remaining));
+      footer.writeln(""); // end current line
+      footer.writeln(""); // blank line after text block
       break;
     }
   }
@@ -574,10 +583,14 @@ function handleUserMessage(
             m.replace(/<\/?tool_use_error>/g, "")).trim();
           if (cleaned) {
             footer.writeln(chalk.dim("    │ ") + chalk.red(cleaned));
+            footer.writeln("");
           }
         } else {
           const preview = formatToolResult(text);
-          if (preview) footer.writeln(preview);
+          if (preview) {
+            footer.writeln(preview);
+            footer.writeln("");
+          }
         }
       }
     }
@@ -605,12 +618,14 @@ function handleResult(
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-/**
- * Apply chalk.green to each line individually so ANSI codes don't bleed
- * across line boundaries in the terminal store.
- */
-function greenLines(text: string): string {
-  return text.replace(/[^\n]+/g, (m) => chalk.green(m));
+function dimLines(text: string): string {
+  return text.replace(/[^\n]+/g, (m) => chalk.gray.italic(m));
+}
+
+const orange = chalk.hex("#FF9500");
+
+function orangeLines(text: string): string {
+  return text.replace(/[^\n]+/g, (m) => orange(m));
 }
 
 // ─── MCP Config Builder ────────────────────────────────────────────────

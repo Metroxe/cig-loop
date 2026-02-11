@@ -30,6 +30,8 @@ export interface IterationResult {
   stopStringDetected: boolean;
   /** Whether the continue string was detected */
   continueStringDetected: boolean;
+  /** The content of the final text block (last text block before iteration ended) */
+  finalResponse: string;
 }
 
 /**

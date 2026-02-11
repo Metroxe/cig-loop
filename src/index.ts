@@ -658,6 +658,16 @@ async function runLoop(config: LoopConfig): Promise<void> {
       `${statusIcon} ${chalk.bold(`Iteration ${i}`)} ${chalk.dim("·")} ${statusText} ${chalk.dim("·")} ${formatDuration(result.durationMs)} ${chalk.dim("·")} ${formatCost(result.costUsd || 0)}`
     );
 
+    // Display final response highlighted
+    if (result.finalResponse.trim()) {
+      footer.writeln("");
+      const responseLines = result.finalResponse.trim().split("\n");
+      for (const line of responseLines) {
+        footer.writeln(chalk.green(`  ${line}`));
+      }
+      footer.writeln("");
+    }
+
     // Sentinel detection
     if (config.stopString) {
       if (result.stopStringDetected) {

@@ -372,16 +372,16 @@ function indentBlock(content: string, maxLines: number): string {
   if (!content) return "";
 
   const lines = content.split("\n");
-  const pad = chalk.dim("    │ ");
+  const pad = chalk.gray("    │ ");
 
   if (lines.length <= maxLines) {
-    return lines.map((l) => pad + l).join("\n");
+    return lines.map((l) => pad + chalk.gray(l)).join("\n");
   }
 
   const shown = lines.slice(0, maxLines);
   const remaining = lines.length - maxLines;
   return (
-    shown.map((l) => pad + l).join("\n") +
-    "\n" + chalk.dim(`    └ ... (${remaining} more lines)`)
+    shown.map((l) => pad + chalk.gray(l)).join("\n") +
+    "\n" + chalk.gray(`    └ ... (${remaining} more lines)`)
   );
 }

@@ -165,7 +165,7 @@ export async function runClaudeIteration(
                 cacheCreationTokens: u.cache_creation_input_tokens || 0,
               };
             }
-            costUsd = (event.total_cost_usd as number) || 0;
+            costUsd = (event.total_cost_usd as number) ?? (event.cost_usd as number) ?? 0;
 
             liveStats.costUsd = costUsd;
             liveStats.inputTokens = tokenUsage?.inputTokens || 0;

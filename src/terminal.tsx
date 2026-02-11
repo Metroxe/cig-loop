@@ -6,7 +6,7 @@
  * backed by a React component tree that Ink manages.
  */
 
-import React, { useState, useEffect, useRef, useSyncExternalStore } from "react";
+import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { render, Box, Text, Static } from "ink";
 import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
@@ -146,11 +146,16 @@ const SMOKE_CYCLE = [
 const EMBER_CYCLE = ["·:", ":·", "·.", ".:", ":.", "·:"];
 const SMOKE_HEIGHT = 3;
 const SMOKE_DRIFT = 1;
-const BURN_DURATION_MS = 2 * 60 * 1000;
+const BURN_DURATION_MS = 6 * 60 * 1000; // 6 minutes per cigarette
+const BETWEEN_CIGS_MS = 10_000; // ~10s to pull one from the pack
+const UNLIT_MS = 3_000; // unlit, just sitting there
+const LIGHTING_MS = 3_000; // 🔥 at the tip
+const SMOKE_BUILDUP_MS = 3_000; // smoke grows from 0 to full height
+const CIG_CYCLE_MS = BURN_DURATION_MS + BETWEEN_CIGS_MS;
+const CIG_EPOCH = Date.now();
 const PAPER_FULL = 18;
 
 function SmokingCigarette() {
-  const startTime = useRef(Date.now());
   const [frame, setFrame] = useState(0);
   const [now, setNow] = useState(Date.now());
 
@@ -162,24 +167,74 @@ function SmokingCigarette() {
     return () => clearInterval(timer);
   }, []);
 
-  // Burn progress — loops back to a fresh cigarette when fully out
-  const elapsed = (now - startTime.current) % BURN_DURATION_MS;
-  const burnProgress = elapsed / BURN_DURATION_MS;
-  const paperLen = Math.max(0, Math.round(PAPER_FULL * (1 - burnProgress)));
+  const totalElapsed = now - CIG_EPOCH;
+  const cyclePos = totalElapsed % CIG_CYCLE_MS;
+  const cigsSmoked = Math.floor(totalElapsed / CIG_CYCLE_MS);
 
-  // Flickering ember
-  const ember = EMBER_CYCLE[frame % EMBER_CYCLE.length]!;
-
-  // Smoke drifts to top-left
-  const bottomPad = (SMOKE_HEIGHT - 1) * SMOKE_DRIFT;
-  const cigPad = bottomPad + 3;
-  const smokeLines: string[] = [];
-  for (let i = 0; i < SMOKE_HEIGHT; i++) {
-    smokeLines.push(
-      " ".repeat(i * SMOKE_DRIFT) +
-        SMOKE_CYCLE[(frame + i) % SMOKE_CYCLE.length]!
+  // Between-cigs gap: keep same height, count on last line
+  if (cyclePos >= BURN_DURATION_MS) {
+    const gapFilterEnd = (SMOKE_HEIGHT - 1) * SMOKE_DRIFT + 3 + 2 + PAPER_FULL + 7;
+    const gapCountStr = `${cigsSmoked}`;
+    const gapPad = Math.max(1, gapFilterEnd - gapCountStr.length);
+    return (
+      <Box flexDirection="column" marginLeft={2}>
+        {Array.from({ length: SMOKE_HEIGHT - 1 }, (_, i) => (
+          <Text key={i}>{" "}</Text>
+        ))}
+        <Text dimColor>{" ".repeat(gapPad) + gapCountStr}</Text>
+        <Text>{" "}</Text>
+      </Box>
     );
   }
+
+  // Phases
+  const isUnlit = cyclePos < UNLIT_MS;
+  const isLighting =
+    cyclePos >= UNLIT_MS && cyclePos < UNLIT_MS + LIGHTING_MS;
+  const smokingStart = UNLIT_MS + LIGHTING_MS;
+  const smokingElapsed = Math.max(0, cyclePos - smokingStart);
+  const smokingDuration = BURN_DURATION_MS - smokingStart;
+
+  // Paper burns only during smoking phase
+  const burnProgress =
+    smokingDuration > 0 ? smokingElapsed / smokingDuration : 0;
+  const paperLen = Math.max(0, Math.round(PAPER_FULL * (1 - burnProgress)));
+
+  // Smoke builds up gradually after lighting
+  const visibleSmoke =
+    isUnlit || isLighting
+      ? 0
+      : Math.min(
+          SMOKE_HEIGHT,
+          Math.floor(
+            (smokingElapsed / SMOKE_BUILDUP_MS) * (SMOKE_HEIGHT + 1)
+          )
+        );
+
+  // Always render SMOKE_HEIGHT lines — empty placeholders until visible
+  const bottomPad = (SMOKE_HEIGHT - 1) * SMOKE_DRIFT;
+  const cigPad = bottomPad + 3;
+  const smokeStartIdx = SMOKE_HEIGHT - visibleSmoke;
+  const smokeLines: string[] = [];
+  for (let i = 0; i < SMOKE_HEIGHT; i++) {
+    if (i < smokeStartIdx) {
+      smokeLines.push(" ");
+    } else {
+      smokeLines.push(
+        " ".repeat(i * SMOKE_DRIFT) +
+          SMOKE_CYCLE[(frame + i) % SMOKE_CYCLE.length]!
+      );
+    }
+  }
+
+  // Embed count on the bottom smoke line, right-aligned to filter end
+  const countStr = `${cigsSmoked}`;
+  const filterEnd = cigPad + 2 + paperLen + 7;
+  const lastIdx = SMOKE_HEIGHT - 1;
+  const lastLineWidth =
+    lastIdx < smokeStartIdx ? 1 : lastIdx * SMOKE_DRIFT + 5;
+  const countPad = Math.max(1, filterEnd - lastLineWidth - countStr.length);
+  smokeLines[lastIdx] += " ".repeat(countPad) + countStr;
 
   return (
     <Box flexDirection="column" marginLeft={2}>
@@ -190,7 +245,15 @@ function SmokingCigarette() {
       ))}
       <Text>
         {" ".repeat(cigPad)}
-        <Text color="#FF6B35">{ember}</Text>
+        {isLighting ? (
+          <Text>🔥</Text>
+        ) : isUnlit ? (
+          <Text color="#F0E8D8">{"▓▓"}</Text>
+        ) : (
+          <Text color="#FF6B35">
+            {EMBER_CYCLE[frame % EMBER_CYCLE.length]}
+          </Text>
+        )}
         {paperLen > 0 ? (
           <Text color="#F0E8D8">{"▓".repeat(paperLen)}</Text>
         ) : null}
@@ -230,15 +293,20 @@ function Footer({
     const bar = progressBar(liveStats.iteration, liveStats.totalIterations);
 
     line1 = ` ${iterLabel} ${bar}`;
-    line2 = ` ▸ Current:  ${formatDuration(elapsed)} │ ${formatCost(liveStats.costUsd)} │ ${formatNumber(liveStats.inputTokens)} in / ${formatNumber(liveStats.outputTokens)} out`;
+    line2 = ` ▸ Current:  ${formatDuration(elapsed)} │ ${formatNumber(liveStats.inputTokens)} in / ${formatNumber(liveStats.outputTokens)} out`;
   } else {
     line1 = " Waiting...";
     line2 = "";
   }
 
+  // Totals = completed iterations + current in-progress iteration
+  const totalDurationMs = cumulative.totalDurationMs + (liveStats ? now - liveStats.startTime : 0);
+  const totalInputTokens = cumulative.totalInputTokens + (liveStats ? liveStats.inputTokens : 0);
+  const totalOutputTokens = cumulative.totalOutputTokens + (liveStats ? liveStats.outputTokens : 0);
+
   let line3: string;
-  if (cumulative.completedIterations > 0) {
-    line3 = ` ▸ Totals:   ${formatDuration(cumulative.totalDurationMs)} │ ${formatCost(cumulative.totalCostUsd)} │ ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`;
+  if (cumulative.completedIterations > 0 || liveStats) {
+    line3 = ` ▸ Totals:   ${formatDuration(totalDurationMs)} │ ${formatNumber(totalInputTokens)} in / ${formatNumber(totalOutputTokens)} out │ ${formatCost(cumulative.totalCostUsd)}`;
   } else {
     line3 = " Totals:   --";
   }

@@ -7,7 +7,16 @@
       "Bash(timeout 10 bun test:*)",
       "Bash(bun:*)",
       "Bash(bunx tsc:*)",
-      "Bash(claude:*)"
+      "Bash(claude:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git -C /Users/cvp/Documents/projects/ez-ralph-loop status -sb)",
+      "Bash(git -C /Users/cvp/Documents/projects/ez-ralph-loop push)",
+      "Bash(git push:*)",
+      "Bash(git -C /Users/cvp/Documents/projects/ez-ralph-loop log:*)",
+      "Bash(git -C /Users/cvp/Documents/projects/ez-ralph-loop show 3c44ea0:boilerplates/web-research/PROMPT.md)",
+      "Bash(git -C /Users/cvp/Documents/projects/ez-ralph-loop diff --name-status HEAD)"
     ]
   }
 }

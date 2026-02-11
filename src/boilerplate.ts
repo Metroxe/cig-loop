@@ -81,96 +81,166 @@ async function checkConflicts(filePaths: string[]): Promise<string[]> {
   return conflicts;
 }
 
+/** Parse boilerplate subcommand args: `boilerplate [--name <name>] [--force]` */
+function parseBoilerplateArgs(): { name?: string; force: boolean } {
+  const args = process.argv.slice(3);
+  let name: string | undefined;
+  let force = false;
+
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--name" || args[i] === "-n") && args[i + 1]) {
+      name = args[++i];
+    } else if (args[i] === "--force" || args[i] === "-f") {
+      force = true;
+    } else if (args[i] === "--list" || args[i] === "-l") {
+      // handled separately
+    } else if (args[i] === "--help" || args[i] === "-h") {
+      console.log(
+        `Usage: cig-loop boilerplate [options]\n\n` +
+        `Options:\n` +
+        `  -n, --name <name>  boilerplate to use (skip interactive selection)\n` +
+        `  -l, --list         list available boilerplates and exit\n` +
+        `  -f, --force        overwrite existing files without prompting\n` +
+        `  -h, --help         show this help\n`,
+      );
+      process.exit(0);
+    }
+  }
+
+  return { name, force };
+}
+
+function shouldList(): boolean {
+  return process.argv.slice(3).some((a) => a === "--list" || a === "-l");
+}
+
 export async function runBoilerplate(): Promise<void> {
-  p.intro(chalk.bgCyan.black(" cig-loop boilerplate "));
+  const { name: requestedName, force } = parseBoilerplateArgs();
+  const listOnly = shouldList();
+  const interactive = !requestedName && !listOnly;
+
+  if (interactive) {
+    p.intro(chalk.bgCyan.black(" cig-loop boilerplate "));
+  }
 
   // Fetch available boilerplates
-  const spinner = p.spinner();
-  spinner.start("Fetching boilerplates...");
+  const spinner = interactive ? p.spinner() : null;
+  spinner?.start("Fetching boilerplates...");
+  if (!interactive) console.log("Fetching boilerplates...");
 
   let boilerplates: string[];
   try {
     boilerplates = await fetchBoilerplateList();
   } catch (err) {
-    spinner.stop("Failed to fetch boilerplates");
-    p.log.error(
-      `Could not fetch boilerplates from GitHub.\n` +
+    spinner?.stop("Failed to fetch boilerplates");
+    console.error(
+      chalk.red(`Could not fetch boilerplates from GitHub.\n`) +
       `  ${chalk.dim(String(err))}\n\n` +
       `  Check your internet connection and try again.`,
     );
-    p.outro("");
     process.exit(1);
   }
 
   if (boilerplates.length === 0) {
-    spinner.stop("No boilerplates found");
-    p.log.warn("No boilerplates are available in the repository yet.");
-    p.outro("");
-    return;
-  }
-
-  spinner.stop(`Found ${boilerplates.length} boilerplate${boilerplates.length > 1 ? "s" : ""}`);
-
-  // Select a boilerplate
-  const selected = await p.select({
-    message: "Select a boilerplate",
-    options: boilerplates.map((name) => ({
-      value: name,
-      label: toDisplayName(name),
-    })),
-  });
-
-  if (p.isCancel(selected)) {
-    p.cancel("Cancelled.");
+    spinner?.stop("No boilerplates found");
+    console.log("No boilerplates are available in the repository yet.");
     process.exit(0);
   }
 
-  const dirName = selected as string;
+  spinner?.stop(`Found ${boilerplates.length} boilerplate${boilerplates.length > 1 ? "s" : ""}`);
+
+  // --list: just print names and exit
+  if (shouldList()) {
+    for (const name of boilerplates) {
+      console.log(`  ${name}  ${chalk.dim(toDisplayName(name))}`);
+    }
+    process.exit(0);
+  }
+
+  // Determine which boilerplate to use
+  let dirName: string;
+
+  if (requestedName) {
+    if (!boilerplates.includes(requestedName)) {
+      console.error(
+        chalk.red(`Boilerplate "${requestedName}" not found.\n`) +
+        `Available: ${boilerplates.join(", ")}`,
+      );
+      process.exit(1);
+    }
+    dirName = requestedName;
+    console.log(`Using boilerplate: ${chalk.bold(toDisplayName(dirName))}`);
+  } else {
+    const selected = await p.select({
+      message: "Select a boilerplate",
+      options: boilerplates.map((name) => ({
+        value: name,
+        label: toDisplayName(name),
+      })),
+    });
+
+    if (p.isCancel(selected)) {
+      p.cancel("Cancelled.");
+      process.exit(0);
+    }
+    dirName = selected as string;
+  }
 
   // Fetch file list
-  spinner.start("Fetching files...");
+  spinner?.start("Fetching files...");
+  if (!interactive) console.log("Fetching files...");
 
   let files: Array<{ relativePath: string; downloadUrl: string }>;
   try {
     files = await fetchBoilerplateFiles(dirName);
   } catch (err) {
-    spinner.stop("Failed to fetch files");
-    p.log.error(`Could not fetch boilerplate files: ${err}`);
-    p.outro("");
+    spinner?.stop("Failed to fetch files");
+    console.error(chalk.red(`Could not fetch boilerplate files: ${err}`));
     process.exit(1);
   }
 
   if (files.length === 0) {
-    spinner.stop("No files found");
-    p.log.warn("This boilerplate has no files.");
-    p.outro("");
-    return;
+    spinner?.stop("No files found");
+    console.log("This boilerplate has no files.");
+    process.exit(0);
   }
 
-  spinner.stop(`${files.length} file${files.length > 1 ? "s" : ""} to copy`);
+  spinner?.stop(`${files.length} file${files.length > 1 ? "s" : ""} to copy`);
+  if (!interactive) console.log(`${files.length} file${files.length > 1 ? "s" : ""} to copy`);
 
   // Check for conflicts
   const conflicts = await checkConflicts(files.map((f) => f.relativePath));
 
   if (conflicts.length > 0) {
-    p.log.warn(
+    const warning =
       `The following files already exist and will be overwritten:\n` +
-      conflicts.map((f) => `  ${chalk.yellow(f)}`).join("\n"),
-    );
+      conflicts.map((f) => `  ${chalk.yellow(f)}`).join("\n");
 
-    const proceed = await p.confirm({
-      message: "Overwrite existing files?",
-      initialValue: false,
-    });
+    if (interactive && !force) {
+      p.log.warn(warning);
 
-    if (p.isCancel(proceed) || !proceed) {
-      p.cancel("Cancelled.");
-      process.exit(0);
+      const proceed = await p.confirm({
+        message: "Overwrite existing files?",
+        initialValue: false,
+      });
+
+      if (p.isCancel(proceed) || !proceed) {
+        p.cancel("Cancelled.");
+        process.exit(0);
+      }
+    } else if (!force) {
+      console.error(chalk.yellow(warning));
+      console.error(chalk.red("Use --force to overwrite."));
+      process.exit(1);
+    } else {
+      console.log(chalk.yellow(warning));
+      console.log("Overwriting (--force).");
     }
   }
 
   // Download and write files
-  spinner.start("Copying files...");
+  spinner?.start("Copying files...");
+  if (!interactive) console.log("Copying files...");
 
   try {
     for (const file of files) {
@@ -186,18 +256,25 @@ export async function runBoilerplate(): Promise<void> {
       await Bun.write(file.relativePath, content);
     }
   } catch (err) {
-    spinner.stop("Failed to copy files");
-    p.log.error(`Error writing files: ${err}`);
-    p.outro("");
+    spinner?.stop("Failed to copy files");
+    console.error(chalk.red(`Error writing files: ${err}`));
     process.exit(1);
   }
 
-  spinner.stop("Files copied");
+  spinner?.stop("Files copied");
 
   // Show what was copied
   for (const file of files) {
-    p.log.success(file.relativePath);
+    if (interactive) {
+      p.log.success(file.relativePath);
+    } else {
+      console.log(chalk.green(`  ✓ ${file.relativePath}`));
+    }
   }
 
-  p.outro(chalk.green(`Done! Run ${chalk.bold("cig-loop")} to start.`));
+  if (interactive) {
+    p.outro(chalk.green(`Done! Run ${chalk.bold("cig-loop")} to start.`));
+  } else {
+    console.log(chalk.green(`\nDone! Run ${chalk.bold("cig-loop")} to start.`));
+  }
 }

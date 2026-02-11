@@ -118,10 +118,20 @@ function parseAndFormat(content: string | unknown): string {
   let data: unknown = content;
 
   if (typeof content === "string") {
+    const cleaned = stripSystemReminders(content);
+
+    // Detect cat -n style Write output (with header) and reformat as diff
+    const catN = formatCatNOutput(cleaned);
+    if (catN) return catN;
+
+    // Detect raw numbered lines (Read tool output) and reformat with clean line numbers
+    const numbered = formatRawNumberedLines(cleaned);
+    if (numbered) return numbered;
+
     try {
       data = JSON.parse(content);
     } catch {
-      return stripSystemReminders(content);
+      return cleaned;
     }
   }
 
@@ -275,6 +285,75 @@ function formatWriteResult(data: Record<string, unknown>): string {
   return parts.join(" ") || chalk.dim("(write completed)");
 }
 
+/**
+ * Detect and reformat `cat -n` style Write/Edit tool output as a colored diff.
+ * Returns null if the text doesn't match the expected pattern.
+ */
+function formatCatNOutput(text: string): string | null {
+  const headerPattern =
+    /^.*?(?:has been (?:created|updated|written)|result of running [`'\u2018\u2019]cat -n[`'\u2018\u2019]|snippet of the (?:edited|new) file).*?\n/;
+  const headerMatch = text.match(headerPattern);
+  if (!headerMatch) return null;
+
+  const contentPart = text.substring(headerMatch[0].length);
+  const rawLines = contentPart.split("\n");
+
+  // cat -n uses tab between number and content, but some tools use → or other separators
+  const linePattern = /^\s*(\d+)[\t\u2192→]\s?(.*)$/;
+
+  const parsedLines: string[] = [];
+  for (const line of rawLines) {
+    const match = line.match(linePattern);
+    if (match) {
+      parsedLines.push(match[2]!);
+    } else if (/^\s*\d+\s*$/.test(line)) {
+      // Line number with no content (empty line in file)
+      parsedLines.push("");
+    }
+  }
+
+  if (parsedLines.length === 0) return null;
+
+  return parsedLines.map((l) => chalk.green("+ " + l)).join("\n");
+}
+
+/**
+ * Detect raw `cat -n` numbered lines (no header) and reformat with clean line numbers.
+ * Used for Read tool results that arrive as plain text.
+ * Returns null if the text doesn't look like numbered lines.
+ */
+function formatRawNumberedLines(text: string): string | null {
+  const lines = text.split("\n");
+  const linePattern = /^\s*(\d+)[\t\u2192→]\s?(.*)$/;
+
+  const parsed: { num: number; content: string }[] = [];
+  let matchCount = 0;
+
+  for (const line of lines) {
+    const match = line.match(linePattern);
+    if (match) {
+      parsed.push({ num: parseInt(match[1]!, 10), content: match[2]! });
+      matchCount++;
+    } else if (/^\s*\d+\s*$/.test(line)) {
+      parsed.push({ num: parseInt(line.trim(), 10), content: "" });
+      matchCount++;
+    } else if (line.trim() === "") {
+      continue;
+    } else {
+      // Non-matching line — not cat -n format
+      return null;
+    }
+  }
+
+  if (matchCount < 2) return null;
+
+  const maxNum = Math.max(...parsed.map((p) => p.num));
+  const numWidth = String(maxNum).length;
+  return parsed
+    .map((p) => chalk.dim(`${String(p.num).padStart(numWidth)} `) + p.content)
+    .join("\n");
+}
+
 function formatGrepResult(data: Record<string, unknown>): string {
   const matches = data.matches;
   if (!Array.isArray(matches)) {
@@ -365,7 +444,93 @@ function truncate(str: string, max: number): string {
 }
 
 /**
+ * Strip ANSI escape codes from a string to get visible text length.
+ */
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[\d;]*m/g, "");
+}
+
+/**
+ * Wrap a single line to fit within maxWidth visible characters.
+ * Prefers breaking at word boundaries (spaces); falls back to hard wrap.
+ * Preserves ANSI escape sequences across line breaks.
+ */
+function wrapLine(line: string, maxWidth: number): string[] {
+  if (maxWidth <= 0 || stripAnsi(line).length <= maxWidth) return [line];
+
+  // Step 1: parse into visible chars + ANSI codes, mapping visible index → raw offset
+  const plain = stripAnsi(line);
+
+  // Find break positions in the plain text using greedy word wrap
+  const breaks: number[] = [];
+  let pos = 0;
+  while (pos < plain.length) {
+    if (pos + maxWidth >= plain.length) {
+      break; // remainder fits
+    }
+    // Look for last space within the next maxWidth chars
+    const window = plain.substring(pos, pos + maxWidth + 1);
+    const lastSpace = window.lastIndexOf(" ");
+    if (lastSpace > maxWidth * 0.3) {
+      breaks.push(pos + lastSpace);
+      pos = pos + lastSpace + 1; // skip the space
+    } else {
+      // No good space — hard wrap
+      breaks.push(pos + maxWidth);
+      pos = pos + maxWidth;
+    }
+  }
+
+  if (breaks.length === 0) return [line];
+
+  // Step 2: walk original string, splitting at the break positions
+  const result: string[] = [];
+  let visIdx = 0;
+  let breakIdx = 0;
+  let current = "";
+  let activeStyle = "";
+
+  for (let i = 0; i < line.length; i++) {
+    const rest = line.substring(i);
+    const ansiMatch = rest.match(/^\x1b\[[\d;]*m/);
+    if (ansiMatch) {
+      current += ansiMatch[0];
+      if (/^\x1b\[(0|22|39|49)m$/.test(ansiMatch[0])) {
+        activeStyle = "";
+      } else {
+        activeStyle = ansiMatch[0];
+      }
+      i += ansiMatch[0].length - 1; // -1 because for-loop increments
+      continue;
+    }
+
+    // Check if we've hit a break point
+    if (breakIdx < breaks.length && visIdx === breaks[breakIdx]) {
+      // Close active style and push sub-line
+      if (activeStyle) current += "\x1b[0m";
+      result.push(current);
+      current = activeStyle;
+      breakIdx++;
+
+      // If the break was at a space, skip it (consumed as the break)
+      if (plain[visIdx] === " ") {
+        visIdx++;
+        continue;
+      }
+    }
+
+    current += line[i];
+    visIdx++;
+  }
+
+  if (current && stripAnsi(current).length > 0) result.push(current);
+  return result.length > 0 ? result : [""];
+}
+
+/**
  * Indent a block of text with consistent left padding.
+ * Wraps long lines to fit within the terminal width, maintaining the border.
  * Truncates to maxLines if needed.
  */
 function indentBlock(content: string, maxLines: number): string {
@@ -373,15 +538,31 @@ function indentBlock(content: string, maxLines: number): string {
 
   const lines = content.split("\n");
   const pad = chalk.gray("    │ ");
+  const padWidth = 6; // visible width of "    │ "
+  const termWidth = process.stdout.columns || 80;
+  const availableWidth = Math.max(termWidth - padWidth, 20);
 
-  if (lines.length <= maxLines) {
-    return lines.map((l) => pad + chalk.gray(l)).join("\n");
+  const outputLines: string[] = [];
+  for (const line of lines) {
+    const subLines = wrapLine(line, availableWidth - 1);
+    for (let j = 0; j < subLines.length; j++) {
+      if (j === 0) {
+        outputLines.push(pad + chalk.gray(subLines[j]!));
+      } else {
+        // Continuation: extra space to align with text after diff markers (+/-)
+        outputLines.push(pad + chalk.gray(" " + subLines[j]!));
+      }
+    }
   }
 
-  const shown = lines.slice(0, maxLines);
-  const remaining = lines.length - maxLines;
+  if (outputLines.length <= maxLines) {
+    return outputLines.join("\n");
+  }
+
+  const shown = outputLines.slice(0, maxLines);
+  const remaining = outputLines.length - maxLines;
   return (
-    shown.map((l) => pad + chalk.gray(l)).join("\n") +
+    shown.join("\n") +
     "\n" + chalk.gray(`    └ ... (${remaining} more lines)`)
   );
 }

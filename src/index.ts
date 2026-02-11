@@ -652,7 +652,7 @@ async function runLoop(config: LoopConfig): Promise<void> {
 
     // Print iteration summary in scroll area
     footer.writeln("");
-    const statusIcon = result.success ? chalk.green("  ✓") : chalk.red("  ✗");
+    const statusIcon = result.success ? chalk.green("✓") : chalk.red("✗");
     const statusText = result.success ? chalk.green("Success") : chalk.red(`Failed (exit ${result.exitCode})`);
     footer.writeln(
       `${statusIcon} ${chalk.bold(`Iteration ${i}`)} ${chalk.dim("·")} ${statusText} ${chalk.dim("·")} ${formatDuration(result.durationMs)} ${chalk.dim("·")} ${formatCost(result.costUsd || 0)}`

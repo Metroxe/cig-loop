@@ -5,7 +5,8 @@
       "Bash(ls:*)",
       "Bash(bun build:*)",
       "Bash(timeout 10 bun test:*)",
-      "Bash(bun:*)"
+      "Bash(bun:*)",
+      "Bash(bunx tsc:*)"
     ]
   }
 }

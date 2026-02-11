@@ -106,22 +106,14 @@ function progressBar(current: number, total: number, width = 20): string {
   if (total === 0) {
     const pos = current % (width * 2);
     const idx = pos < width ? pos : width * 2 - pos;
-    const bar =
-      " ".repeat(idx) +
-      "<=>" +
-      " ".repeat(Math.max(0, width - idx - 3));
-    return `[${bar}]`;
+    return " ".repeat(idx) + "◆" + " ".repeat(Math.max(0, width - idx - 1));
   }
 
   const ratio = Math.min(current / total, 1);
   const filled = Math.round(ratio * width);
   const empty = width - filled;
   const pct = Math.round(ratio * 100);
-  const bar =
-    "=".repeat(Math.max(0, filled - 1)) +
-    (filled > 0 ? ">" : "") +
-    " ".repeat(empty);
-  return `[${bar}] ${pct}%`;
+  return "█".repeat(filled) + "░".repeat(empty) + ` ${pct}%`;
 }
 
 // ─── Footer Component ─────────────────────────────────────────────────
@@ -154,7 +146,7 @@ function Footer({
     const bar = progressBar(liveStats.iteration, liveStats.totalIterations);
 
     line1 = ` ${iterLabel} ${bar}`;
-    line2 = ` Current:  ${formatDuration(elapsed)} | ${formatCost(liveStats.costUsd)} | ${formatNumber(liveStats.inputTokens)} in / ${formatNumber(liveStats.outputTokens)} out`;
+    line2 = ` ▸ Current:  ${formatDuration(elapsed)} │ ${formatCost(liveStats.costUsd)} │ ${formatNumber(liveStats.inputTokens)} in / ${formatNumber(liveStats.outputTokens)} out`;
   } else {
     line1 = " Waiting...";
     line2 = "";
@@ -162,14 +154,14 @@ function Footer({
 
   let line3: string;
   if (cumulative.completedIterations > 0) {
-    line3 = ` Totals:   ${formatDuration(cumulative.totalDurationMs)} | ${formatCost(cumulative.totalCostUsd)} | ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`;
+    line3 = ` ▸ Totals:   ${formatDuration(cumulative.totalDurationMs)} │ ${formatCost(cumulative.totalCostUsd)} │ ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`;
   } else {
     line3 = " Totals:   --";
   }
 
   return (
     <Box flexDirection="column">
-      <Text dimColor>{"─".repeat(cols)}</Text>
+      <Text dimColor>{"━".repeat(cols)}</Text>
       <Text bold>{line1}</Text>
       <Text color="cyan">{line2}</Text>
       <Text color="yellow">{line3}</Text>

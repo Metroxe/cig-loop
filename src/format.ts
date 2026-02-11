@@ -20,6 +20,16 @@ export function stripSystemReminders(text: string): string {
   return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
 }
 
+/**
+ * Strip XML-like wrapper tags from tool results (e.g. <tool_use_error>...</tool_use_error>).
+ */
+export function stripToolTags(text: string): string {
+  return text
+    .replace(/<tool_use_error>([\s\S]*?)<\/tool_use_error>/g, "$1")
+    .replace(/<tool_result>([\s\S]*?)<\/tool_result>/g, "$1")
+    .trim();
+}
+
 // ─── Tool Use Formatting ───────────────────────────────────────────────
 
 /**
@@ -98,6 +108,7 @@ export function formatToolResult(
 
   let text = parseAndFormat(content);
   text = stripSystemReminders(text);
+  text = stripToolTags(text);
   if (!text.trim()) return "";
 
   return indentBlock(text, maxLines);
@@ -285,6 +296,43 @@ function formatGrepResult(data: Record<string, unknown>): string {
   return lines.length > 0 ? lines.join("\n") : chalk.dim("No matches found");
 }
 
+// ─── Tool Icons ───────────────────────────────────────────────────────
+
+/**
+ * Return a styled icon for a tool invocation.
+ */
+export function getToolIcon(toolName: string): string {
+  switch (toolName) {
+    case "Read":
+      return chalk.dim("  ○");
+    case "Write":
+      return chalk.yellow("  ●");
+    case "Edit":
+    case "StrReplace":
+    case "MultiEdit":
+      return chalk.yellow("  ●");
+    case "Bash":
+    case "Shell":
+      return chalk.dim("  ▷");
+    case "Grep":
+    case "Search":
+    case "RipGrep":
+    case "Glob":
+    case "SemanticSearch":
+    case "WebSearch":
+    case "LS":
+    case "ListDir":
+      return chalk.dim("  ○");
+    case "Task":
+      return chalk.dim("  ◇");
+    case "TodoRead":
+    case "TodoWrite":
+      return chalk.dim("  ○");
+    default:
+      return chalk.dim("  ▸");
+  }
+}
+
 // ─── Cost / Token Formatting ───────────────────────────────────────────
 
 export function formatCost(cost: number): string {
@@ -324,16 +372,16 @@ function indentBlock(content: string, maxLines: number): string {
   if (!content) return "";
 
   const lines = content.split("\n");
-  const pad = "    ";
+  const pad = chalk.dim("    │ ");
 
   if (lines.length <= maxLines) {
-    return lines.map((l) => chalk.dim(pad) + l).join("\n");
+    return lines.map((l) => pad + l).join("\n");
   }
 
   const shown = lines.slice(0, maxLines);
   const remaining = lines.length - maxLines;
   return (
-    shown.map((l) => chalk.dim(pad) + l).join("\n") +
-    "\n" + chalk.dim(`${pad}... (${remaining} more lines)`)
+    shown.map((l) => pad + l).join("\n") +
+    "\n" + chalk.dim(`    └ ... (${remaining} more lines)`)
   );
 }

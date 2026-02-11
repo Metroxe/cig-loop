@@ -7,7 +7,8 @@
  */
 
 import chalk from "chalk";
-import { formatToolUse, formatToolResult, formatCost, formatNumber, stripSystemReminders } from "./format.js";
+import { formatToolUse, formatToolResult, formatCost, formatNumber, stripSystemReminders, getToolIcon } from "./format.js";
+import { MarkdownStreamer } from "./markdown.js";
 import { StickyFooter } from "./terminal.js";
 import type {
   InjectableMcp,
@@ -84,7 +85,7 @@ export async function runClaudeIteration(
   };
   footer.setLiveStats(liveStats);
 
-  footer.writeln(chalk.dim("  Starting Claude..."));
+  footer.writeln(chalk.dim("  ◆ Starting Claude..."));
 
   // Spawn claude process (stdin must not inherit, otherwise claude may block waiting for input)
   const proc = Bun.spawn(["claude", ...args], {
@@ -107,6 +108,7 @@ export async function runClaudeIteration(
     setThinkingStarted: (v: boolean) => { state.thinkingStarted = v; },
     appendOutput: (text: string) => { output += text; },
     hasStreamedContent: false,
+    markdownStreamer: new MarkdownStreamer(),
   };
 
   // Read stdout line by line
@@ -234,6 +236,7 @@ interface ProcessingState {
   appendOutput: (text: string) => void;
   /** Track whether we've seen streaming deltas (to avoid double-printing from assistant events) */
   hasStreamedContent: boolean;
+  markdownStreamer: MarkdownStreamer;
 }
 
 async function processEvent(
@@ -253,7 +256,7 @@ async function processEvent(
       break;
 
     case "content_block_start":
-      handleBlockStart(event, blocks);
+      handleBlockStart(event, blocks, state, footer);
       break;
 
     case "content_block_delta":
@@ -300,7 +303,7 @@ async function handleSystemEvent(
     const model = event.model as string | undefined;
     const sessionId = event.session_id as string | undefined;
     if (model) {
-      footer.writeln(chalk.dim(`  Model: ${model}`));
+      footer.writeln(chalk.dim(`  ◆ Model: ${model}`));
     }
     if (config.verbose && sessionId) {
       footer.writeln(chalk.dim(`  Session: ${sessionId}`));
@@ -367,17 +370,29 @@ async function parseMcpErrors(debugFile: string): Promise<Record<string, string>
 function handleBlockStart(
   event: Record<string, unknown>,
   blocks: Record<number, StreamingBlock>,
+  state: ProcessingState,
+  footer: StickyFooter,
 ): void {
   const idx = event.index as number;
   const block = event.content_block as Record<string, unknown> | undefined;
   if (!block) return;
 
   const blockType = block.type as string;
+
+  // Mark that we've received streaming blocks for this assistant turn,
+  // so handleAssistantMessage knows to skip re-printing.
+  if (blockType === "tool_use" || blockType === "text" || blockType === "thinking") {
+    state.hasStreamedContent = true;
+  }
+
   switch (blockType) {
     case "tool_use":
       blocks[idx] = { type: "tool_use", name: (block.name as string) || "tool", input: "" };
       break;
     case "text":
+      // Reset markdown streamer so state doesn't leak across tool use gaps
+      state.markdownStreamer.reset();
+      footer.writeln("");
       blocks[idx] = { type: "text", content: "" };
       break;
     case "tool_result":
@@ -407,8 +422,9 @@ function handleBlockDelta(
       const text = delta.text as string;
       if (text) {
         state.hasStreamedContent = true;
-        footer.write(text);
-        state.appendOutput(text);
+        const sanitized = state.markdownStreamer.feed(text);
+        if (sanitized) footer.write(greenLines(sanitized));
+        state.appendOutput(text); // raw text for sentinel detection
         if (blocks[idx]) {
           blocks[idx].content = (blocks[idx].content || "") + text;
         }
@@ -420,11 +436,11 @@ function handleBlockDelta(
       const thinking = delta.thinking as string;
       if (thinking) {
         if (!state.thinkingStarted) {
-          footer.write(chalk.dim.italic("\n  Thinking...\n"));
+          footer.write(chalk.dim.italic("\n"));
           state.setThinkingStarted(true);
         }
-        // Don't display thinking content - just show the indicator
-        // (thinking content is very verbose and not useful for loop monitoring)
+        // Stream thinking content with dim italic styling
+        footer.write(chalk.dim.italic(thinking));
         state.appendOutput(thinking);
         if (blocks[idx]) {
           blocks[idx].content = (blocks[idx].content || "") + thinking;
@@ -456,7 +472,8 @@ function handleBlockStop(
   switch (block.type) {
     case "tool_use": {
       const description = formatToolUse(block.name || "tool", block.input || "{}");
-      footer.writeln(chalk.dim(`\n  ${chalk.bold.cyan(">")} ${description}`));
+      const icon = getToolIcon(block.name || "tool");
+      footer.writeln(`\n${icon} ${chalk.cyan(description)}`);
       break;
     }
 
@@ -464,7 +481,6 @@ function handleBlockStop(
       const preview = formatToolResult(block.content);
       if (preview) {
         footer.writeln(preview);
-        footer.writeln(""); // blank line after result
       }
       break;
     }
@@ -478,7 +494,9 @@ function handleBlockStop(
     }
 
     case "text": {
-      // Text was already streamed via deltas
+      // Flush any remaining buffered markdown
+      const remaining = state.markdownStreamer.flush();
+      if (remaining) footer.write(greenLines(remaining));
       footer.writeln(""); // end with newline
       break;
     }
@@ -517,7 +535,8 @@ function handleAssistantMessage(
         block.name as string,
         typeof block.input === "string" ? block.input : JSON.stringify(block.input),
       );
-      footer.writeln(chalk.dim(`  ${chalk.bold.cyan(">")} ${description}`));
+      const icon = getToolIcon(block.name as string);
+      footer.writeln(`${icon} ${chalk.cyan(description)}`);
     } else if (blockType === "tool_result" && block.content) {
       const preview = formatToolResult(block.content);
       if (preview) footer.writeln(preview);
@@ -526,11 +545,43 @@ function handleAssistantMessage(
 }
 
 function handleUserMessage(
-  _event: Record<string, unknown>,
-  _footer: StickyFooter,
+  event: Record<string, unknown>,
+  footer: StickyFooter,
 ): void {
-  // Tool results from user messages are already shown when the
-  // content_block_stop fires for tool_result blocks. Skip to avoid duplicates.
+  // User messages contain tool results. Display a preview of each.
+  const message = event.message as Record<string, unknown> | undefined;
+  if (!message?.content) return;
+
+  const content = message.content as Array<Record<string, unknown>>;
+  for (const block of content) {
+    if (block.type === "tool_result") {
+      // Extract the text content from the tool result
+      let text: string | undefined;
+      if (typeof block.content === "string") {
+        text = block.content;
+      } else if (Array.isArray(block.content)) {
+        // Content can be an array of {type: "text", text: "..."} parts
+        text = (block.content as Array<Record<string, unknown>>)
+          .filter((p) => p.type === "text" && typeof p.text === "string")
+          .map((p) => p.text as string)
+          .join("\n");
+      }
+
+      if (text) {
+        if (block.is_error) {
+          // For errors, show with red styling instead of normal formatting
+          const cleaned = text.replace(/<tool_use_error>[\s\S]*?<\/tool_use_error>/g, (m) =>
+            m.replace(/<\/?tool_use_error>/g, "")).trim();
+          if (cleaned) {
+            footer.writeln(chalk.dim("    │ ") + chalk.red(cleaned));
+          }
+        } else {
+          const preview = formatToolResult(text);
+          if (preview) footer.writeln(preview);
+        }
+      }
+    }
+  }
 }
 
 function handleResult(
@@ -544,12 +595,22 @@ function handleResult(
     footer.writeln("");
     footer.writeln(
       chalk.dim(
-        `  Step cost: ${formatCost(totalCost || 0)} | ` +
+        `  Step cost: ${formatCost(totalCost || 0)} │ ` +
         `${formatNumber(usage?.input_tokens || 0)} in / ` +
         `${formatNumber(usage?.output_tokens || 0)} out`
       ),
     );
   }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Apply chalk.green to each line individually so ANSI codes don't bleed
+ * across line boundaries in the terminal store.
+ */
+function greenLines(text: string): string {
+  return text.replace(/[^\n]+/g, (m) => chalk.green(m));
 }
 
 // ─── MCP Config Builder ────────────────────────────────────────────────

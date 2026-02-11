@@ -626,8 +626,10 @@ async function runLoop(config: LoopConfig): Promise<void> {
       ? `Iteration ${i} (infinite mode)`
       : `Iteration ${i}/${config.iterations}`;
 
+    const cols = process.stdout.columns || 80;
     footer.writeln("");
-    footer.writeln(chalk.bold.blue(`--- ${iterLabel} ---`));
+    footer.writeln(chalk.blue("─".repeat(cols)));
+    footer.writeln(chalk.bold.blue(`  ${iterLabel}`));
     footer.writeln("");
 
     // Run Claude
@@ -650,11 +652,10 @@ async function runLoop(config: LoopConfig): Promise<void> {
 
     // Print iteration summary in scroll area
     footer.writeln("");
-    footer.writeln(chalk.bold.blue(`--- Iteration ${i} Complete ---`));
+    const statusIcon = result.success ? chalk.green("  ✓") : chalk.red("  ✗");
+    const statusText = result.success ? chalk.green("Success") : chalk.red(`Failed (exit ${result.exitCode})`);
     footer.writeln(
-      `  Duration: ${formatDuration(result.durationMs)} | ` +
-      `Cost: ${formatCost(result.costUsd || 0)} | ` +
-      `Status: ${result.success ? chalk.green("Success") : chalk.red(`Failed (exit ${result.exitCode})`)}`
+      `${statusIcon} ${chalk.bold(`Iteration ${i}`)} ${chalk.dim("·")} ${statusText} ${chalk.dim("·")} ${formatDuration(result.durationMs)} ${chalk.dim("·")} ${formatCost(result.costUsd || 0)}`
     );
 
     // Sentinel detection
@@ -706,16 +707,19 @@ function printFinalSummary(
   config: LoopConfig,
   stopReason: string,
 ): void {
+  const cols = process.stdout.columns || 80;
   console.log("");
-  console.log(chalk.bold.green("=== Ralph Loop Complete ==="));
+  console.log(chalk.green("━".repeat(cols)));
+  console.log(chalk.bold.green("  ✓ Ralph Loop Complete"));
+  console.log("");
   const totalLabel = config.iterations === 0
     ? `${cumulative.completedIterations} (infinite mode)`
     : `${cumulative.completedIterations}/${config.iterations}`;
-  console.log(`  Total iterations: ${totalLabel}`);
-  console.log(`  Total duration:   ${formatDuration(cumulative.totalDurationMs)}`);
-  console.log(`  Total cost:       ${formatCost(cumulative.totalCostUsd)}`);
-  console.log(`  Total tokens:     ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`);
-  console.log(`  Stopped:          ${stopReason}`);
+  console.log(`  Iterations:  ${totalLabel}`);
+  console.log(`  Duration:    ${formatDuration(cumulative.totalDurationMs)}`);
+  console.log(`  Cost:        ${formatCost(cumulative.totalCostUsd)}`);
+  console.log(`  Tokens:      ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`);
+  console.log(`  Stopped:     ${chalk.dim(stopReason)}`);
   console.log("");
 }
 

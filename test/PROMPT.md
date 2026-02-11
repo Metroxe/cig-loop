@@ -1,30 +1,15 @@
-You are being tested on your ability to reason deeply. You MUST think step-by-step before answering.
+Think deeply before answering. Show your full reasoning.
 
-## Task 1: Code Analysis
+## Task 1: Analyze & Write
 
-Read the file `src/claude.ts` and identify every potential race condition or edge case in the streaming event processing logic. For each issue found, explain:
-- The exact sequence of events that could trigger it
-- The severity (critical / moderate / low)
-- A concrete fix with code
+Read `src/claude.ts`. Identify the 3 most significant edge cases in the streaming event processing. Then write your findings to `test/analysis.md` (overwrite if it exists) with: trigger condition, severity, and a one-line fix for each.
 
-## Task 2: Algorithmic Reasoning
+## Task 2: Constraint Problem
 
-Solve this constraint satisfaction problem and show your full reasoning:
-
-A scheduler must assign 5 tasks (A-E) to 3 workers (W1-W3) under these constraints:
+Assign 5 tasks (A=3, B=5, C=2, D=4, E=1) to 3 workers with these constraints:
 - A must finish before C starts
-- B and D cannot be assigned to the same worker
+- B and D cannot share a worker
 - E must be on W2
-- No worker can have more than 2 tasks
-- The total makespan (time for all tasks to complete) must be minimized
-- Task durations: A=3, B=5, C=2, D=4, E=1
+- Max 2 tasks per worker
 
-What is the optimal assignment and schedule? Prove that no better solution exists.
-
-## Task 3: Architectural Tradeoff Analysis
-
-Read `src/terminal.tsx` and `src/format.ts`, then write a detailed comparison of two approaches for adding real-time progress bars to tool execution:
-1. Approach A: Extend StickyFooter with a progress bar widget
-2. Approach B: Use ANSI escape codes directly in the scroll region
-
-For each approach, analyze: implementation complexity, terminal compatibility, performance impact, and interaction with the existing markdown streaming. Recommend one with justification.
+Find the optimal schedule that minimizes makespan. Prove no better solution exists.

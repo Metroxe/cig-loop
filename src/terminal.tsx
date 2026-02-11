@@ -177,7 +177,7 @@ function App({ store }: { store: TerminalStore }) {
   return (
     <Box flexDirection="column">
       <Static items={state.lines}>
-        {(line) => <Text key={line.id}>{line.text}</Text>}
+        {(line) => <Text key={line.id}>{line.text || " "}</Text>}
       </Static>
       {state.currentLine ? <Text>{state.currentLine}</Text> : null}
       <Footer liveStats={state.liveStats} cumulative={state.cumulative} />

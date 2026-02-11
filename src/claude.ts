@@ -480,7 +480,7 @@ function handleBlockStop(
     case "tool_use": {
       const description = formatToolUse(block.name || "tool", block.input || "{}");
       const icon = getToolIcon(block.name || "tool");
-      footer.writeln(`\n${icon} ${chalk.cyan(description)}`);
+      footer.writeln(`${icon} ${chalk.cyan(description)}`);
       break;
     }
 
@@ -488,8 +488,8 @@ function handleBlockStop(
       const preview = formatToolResult(block.content);
       if (preview) {
         footer.writeln(preview);
-        footer.writeln(""); // blank line after tool result
       }
+      footer.writeln(""); // blank line after tool result
       break;
     }
 

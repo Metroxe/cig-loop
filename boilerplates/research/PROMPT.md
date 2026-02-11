@@ -74,6 +74,9 @@ Each site gets its own directory under `./sandbox/auth/`. The directory name sho
 
 ## Guidelines
 
+- **Work within a single context window.** All research in one run must fit within a single 200k-token context window. Do not attempt to exhaust the topic — do enough meaningful work that fits comfortably, then stop.
+- **Research one thing at a time.** Focus each run on a single subtopic, lead, or question. Do not try to cover multiple areas in one pass.
+- **If you cannot finish, stop gracefully.** When you sense you are approaching context limits or the remaining work would exceed this session, stop. Add unfinished subtopics and any extra thoughts as new entries in the "Leads to Follow Up" section of `NOTES.md` so the next run can pick them up.
 - Prioritize recent, authoritative sources
 - Note when sources disagree and present both perspectives
 - Include direct quotes when they add value

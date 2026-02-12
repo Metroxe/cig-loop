@@ -25,11 +25,11 @@ Tasks will be read by an AI agent one at a time to implement a project. Each tas
 
 ## Instructions
 
-1. **Read project context.** Load `GOAL.md` to understand what's being built and `NOTES.md` for techstack and preferences.
+1. **Read project context.** Load `./simple-tasklist/GOAL.md` to understand what's being built and `./simple-tasklist/NOTES.md` for techstack and preferences.
 
 2. **Get tasks to review.** Ask the user which tasks they want to review:
    - They can paste specific tasks (one per line), OR
-   - They can type `all` to review all tasks in the Backlog section of `TASKS.md`
+   - They can type `all` to review all tasks in the Backlog section of `./simple-tasklist/TASKS.md`
 
 3. **Process tasks one at a time.** For each task:
 
@@ -52,7 +52,7 @@ Tasks will be read by an AI agent one at a time to implement a project. Each tas
       - **If clear but poorly worded:** Rewrite it to be clearer (you can use information from the codebase to improve it). No need to ask permission for simple rewrites.
       - **If already good:** Approve it and move to the next task
 
-   d. **Make the final edit.** Update `TASKS.md` with the improved task (or multiple tasks if split) before moving to the next one.
+   d. **Make the final edit.** Update `./simple-tasklist/TASKS.md` with the improved task (or multiple tasks if split) before moving to the next one.
 
 4. **Continue until done.** Process all requested tasks one at a time, asking questions and making edits as needed.
 

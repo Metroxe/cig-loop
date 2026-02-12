@@ -16,6 +16,12 @@ export const BUILTIN_MCPS: InjectableMcp[] = [
     description: "Browser automation and testing",
     prereqs: "Run: npx playwright install",
   },
+  {
+    name: "browsermcp",
+    command: "npx",
+    args: ["@browsermcp/mcp@latest"],
+    description: "Browser control and web automation. Install the extension and start it before running. https://docs.browsermcp.io/setup-extension",
+  },
 ];
 
 /**

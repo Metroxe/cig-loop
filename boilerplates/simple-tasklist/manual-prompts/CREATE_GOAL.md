@@ -61,6 +61,27 @@ The `./simple-tasklist/GOAL.md` file provides context to the AI agent about the 
 
 16. **Write the file.** Once approved, write the final content to `./simple-tasklist/GOAL.md`.
 
+17. **Offer to create initial tasks (optional).** Check if `./simple-tasklist/TASKS.md` has any items in the Backlog section:
+    - If the Backlog is empty or has very few tasks, ask: "Would you like me to create initial setup tasks based on what we discussed and the techstack in NOTES.md?"
+    - If yes, proceed to step 18
+    - If no, you're done
+
+18. **Generate initial tasks.** If the user wants initial tasks:
+    - Read `./simple-tasklist/manual-prompts/CLEAN_UP_TASKS.md` to understand how tasks should be written (see the good vs bad examples)
+    - Read `./simple-tasklist/NOTES.md` to understand the techstack
+    - Based on the GOAL.md content you just created and the techstack, create initial tasks focused on:
+      - Project initialization (setting up the repository, installing dependencies)
+      - Basic project structure (creating necessary directories, config files)
+      - Core infrastructure setup (database setup, environment configuration)
+      - Essential first features from the key features list
+    - Keep tasks specific and actionable
+    - Focus on what's necessary to get the project started, not the entire feature set
+    - Write 5-10 initial tasks (not too many)
+
+19. **Show initial tasks.** Present the generated tasks to the user and ask if they want any changes.
+
+20. **Write tasks.** Once approved, add the tasks to the Backlog section of `./simple-tasklist/TASKS.md`.
+
 ## Important Notes
 
 - **Ask questions one section at a time** - don't overwhelm with all questions at once
@@ -68,3 +89,4 @@ The `./simple-tasklist/GOAL.md` file provides context to the AI agent about the 
 - **Ask clarifying questions** when answers are vague or incomplete
 - **Keep the final ./simple-tasklist/GOAL.md concise** - aim for clarity over length
 - The user should be able to read ./simple-tasklist/GOAL.md quickly and understand the project's purpose
+- **Initial tasks are optional** - only generate them if the user wants help getting started

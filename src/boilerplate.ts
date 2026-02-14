@@ -69,19 +69,11 @@ async function downloadFile(url: string): Promise<string> {
   return res.text();
 }
 
-/** Generate a timestamped output directory name, e.g. "research-20260211-143022". */
-function makeOutputDir(dirName: string): string {
-  const now = new Date();
-  const ts = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, "0"),
-    String(now.getDate()).padStart(2, "0"),
-    "-",
-    String(now.getHours()).padStart(2, "0"),
-    String(now.getMinutes()).padStart(2, "0"),
-    String(now.getSeconds()).padStart(2, "0"),
-  ].join("");
-  return `${dirName}-${ts}`;
+/** Compute SHA-256 hex digest of a string. */
+function sha256(content: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(content);
+  return hasher.digest("hex");
 }
 
 /** Parse boilerplate subcommand args: `boilerplate [--name <name>]` */
@@ -207,43 +199,132 @@ export async function runBoilerplate(): Promise<void> {
   spinner?.stop(`${files.length} file${files.length > 1 ? "s" : ""} to copy`);
   if (!interactive) console.log(`${files.length} file${files.length > 1 ? "s" : ""} to copy`);
 
-  // Create a timestamped output directory
-  const outputDir = makeOutputDir(dirName);
+  const outputDir = dirName;
   await Bun.spawn(["mkdir", "-p", outputDir]).exited;
 
-  // Download and write files into the output directory
-  spinner?.start("Copying files...");
-  if (!interactive) console.log("Copying files...");
+  // Download all files and categorize by conflict status
+  spinner?.start("Downloading files...");
+  if (!interactive) console.log("Downloading files...");
+
+  type FileEntry = { relativePath: string; content: string };
+  const newFiles: FileEntry[] = [];
+  const identicalFiles: FileEntry[] = [];
+  const changedFiles: FileEntry[] = [];
 
   try {
     for (const file of files) {
       const content = await downloadFile(file.downloadUrl);
       const destPath = `${outputDir}/${file.relativePath}`;
+      const destFile = Bun.file(destPath);
 
-      // Ensure parent directories exist
+      if (await destFile.exists()) {
+        const existingContent = await destFile.text();
+        if (sha256(content) === sha256(existingContent)) {
+          identicalFiles.push({ relativePath: file.relativePath, content });
+        } else {
+          changedFiles.push({ relativePath: file.relativePath, content });
+        }
+      } else {
+        newFiles.push({ relativePath: file.relativePath, content });
+      }
+    }
+  } catch (err) {
+    spinner?.stop("Failed to download files");
+    console.error(chalk.red(`Error downloading files: ${err}`));
+    process.exit(1);
+  }
+
+  spinner?.stop("Files downloaded");
+
+  // If there are changed files, ask which ones to overwrite
+  let filesToOverwrite: FileEntry[] = [];
+
+  if (changedFiles.length > 0) {
+    if (interactive) {
+      const selected = await p.multiselect({
+        message: "These files have changed. Select which to overwrite:",
+        options: changedFiles.map((f) => ({
+          value: f.relativePath,
+          label: f.relativePath,
+        })),
+        initialValues: changedFiles
+          .filter((f) => f.relativePath.endsWith("PROMPT.md"))
+          .map((f) => f.relativePath),
+        required: false,
+      });
+
+      if (p.isCancel(selected)) {
+        p.cancel("Cancelled.");
+        process.exit(0);
+      }
+
+      const selectedPaths = new Set(selected as string[]);
+      filesToOverwrite = changedFiles.filter((f) => selectedPaths.has(f.relativePath));
+    } else {
+      // Non-interactive: skip changed files (safe default)
+      console.log(chalk.yellow("Skipping changed files (non-interactive mode):"));
+      for (const f of changedFiles) {
+        console.log(chalk.yellow(`  ⊘ ${outputDir}/${f.relativePath}`));
+      }
+    }
+  }
+
+  // Write new files and selected overwrite files
+  spinner?.start("Writing files...");
+  if (!interactive) console.log("Writing files...");
+
+  const filesToWrite = [...newFiles, ...filesToOverwrite];
+
+  try {
+    for (const file of filesToWrite) {
+      const destPath = `${outputDir}/${file.relativePath}`;
+
       const lastSlash = destPath.lastIndexOf("/");
       if (lastSlash !== -1) {
         const dir = destPath.substring(0, lastSlash);
         await Bun.spawn(["mkdir", "-p", dir]).exited;
       }
 
-      await Bun.write(destPath, content);
+      await Bun.write(destPath, file.content);
     }
   } catch (err) {
-    spinner?.stop("Failed to copy files");
+    spinner?.stop("Failed to write files");
     console.error(chalk.red(`Error writing files: ${err}`));
     process.exit(1);
   }
 
-  spinner?.stop("Files copied");
+  spinner?.stop("Done");
 
-  // Show what was copied
+  // Show summary
+  const skippedPaths = new Set(
+    changedFiles
+      .filter((f) => !filesToOverwrite.includes(f))
+      .map((f) => f.relativePath),
+  );
+
   for (const file of files) {
     const destPath = `${outputDir}/${file.relativePath}`;
-    if (interactive) {
-      p.log.success(destPath);
+    const isIdentical = identicalFiles.some((f) => f.relativePath === file.relativePath);
+    const isSkipped = skippedPaths.has(file.relativePath);
+
+    if (isIdentical) {
+      if (interactive) {
+        p.log.info(chalk.dim(`= ${destPath}`));
+      } else {
+        console.log(chalk.dim(`  = ${destPath}`));
+      }
+    } else if (isSkipped) {
+      if (interactive) {
+        p.log.warn(`⊘ ${destPath}`);
+      } else {
+        console.log(chalk.yellow(`  ⊘ ${destPath}`));
+      }
     } else {
-      console.log(chalk.green(`  ✓ ${destPath}`));
+      if (interactive) {
+        p.log.success(destPath);
+      } else {
+        console.log(chalk.green(`  ✓ ${destPath}`));
+      }
     }
   }
 

@@ -333,8 +333,8 @@ function Footer({
           <Text bold>{line1}</Text>
           <Text color="cyan">{line2}</Text>
           <Text color="yellow">{line3}</Text>
-          {rerunCommand ? <Text color="magenta">{` ▸ Rerun:    ${rerunCommand}`}</Text> : null}
           <Text dimColor>{" Usage: https://claude.ai/settings/usage"}</Text>
+          {rerunCommand ? <Text color="magenta">{` ▸ Rerun:    ${rerunCommand}`}</Text> : null}
         </Box>
         {!isWide && <Text>{" "}</Text>}
         <SmokingCigarette />

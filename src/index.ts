@@ -238,6 +238,50 @@ function parseMcpFlag(value: unknown): string[] | "all" | "none" {
 
 // ─── Interactive Prompts ───────────────────────────────────────────────
 
+/**
+ * Search for PROMPT.md in the current directory and immediate subdirectories.
+ * Returns the path if found, otherwise undefined.
+ */
+async function findPromptMd(): Promise<string | undefined> {
+  // Check current directory
+  const cwdPrompt = Bun.file("./PROMPT.md");
+  if (await cwdPrompt.exists()) {
+    return "./PROMPT.md";
+  }
+
+  // Check immediate subdirectories in parallel
+  try {
+    const proc = Bun.spawn(["ls", "-d", "*/"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+
+    const subdirs = stdout
+      .split("\n")
+      .map((line) => line.trim().replace(/\/$/, ""))
+      .filter(Boolean);
+
+    // Check all subdirectories in parallel
+    const checks = subdirs.map(async (subdir) => {
+      const subdirPrompt = Bun.file(`./${subdir}/PROMPT.md`);
+      if (await subdirPrompt.exists()) {
+        return `./${subdir}/PROMPT.md`;
+      }
+      throw new Error("not found");
+    });
+
+    // Return the first one that resolves successfully
+    return await Promise.any(checks);
+  } catch {
+    // Either ls failed or no PROMPT.md found in any subdir
+  }
+
+  return undefined;
+}
+
 async function gatherConfig(): Promise<LoopConfig> {
   // Check which args were explicitly provided on the CLI
   const explicitArgs = new Set<string>();
@@ -265,13 +309,16 @@ async function gatherConfig(): Promise<LoopConfig> {
   // Interactive mode via Clack
   p.intro(chalk.bgCyan.black(" cig-loop "));
 
+  // Find PROMPT.md if it exists
+  const foundPromptPath = await findPromptMd();
+
   // Phase 1: core settings (group prompt)
   const core = await p.group(
     {
       promptPath: () =>
         p.text({
           message: "Path to prompt file",
-          initialValue: opts.prompt || "./PROMPT.md",
+          initialValue: opts.prompt || foundPromptPath,
           validate: (val) => {
             if (!val?.trim()) return "Path is required";
             return undefined;
@@ -514,10 +561,9 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
 // ─── Re-run Command Builder ────────────────────────────────────────────
 
 function buildRerunCommand(config: LoopConfig): string {
-  const parts = ["cig-loop"];
+  const parts = ["./cig-loop"];
 
   parts.push("-p", JSON.stringify(config.promptPath));
-  parts.push("-i", String(config.iterations));
   if (config.model) parts.push("-m", config.model);
   if (config.stopString) parts.push("--stop-string", JSON.stringify(config.stopString));
   if (config.continueString) parts.push("--continue-string", JSON.stringify(config.continueString));
@@ -559,6 +605,7 @@ function buildRerunCommand(config: LoopConfig): string {
     }
   }
   parts.push("--no-interactive");
+  parts.push("-i", String(config.iterations));
 
   return parts.join(" ");
 }

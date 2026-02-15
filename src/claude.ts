@@ -56,22 +56,15 @@ export async function runClaudeIteration(
   // is variadic (accepts multiple values) and would consume the prompt text
   args.push(promptContent);
 
-  // MCP server handling (appended after the prompt)
-  const hasConfiguredMcps = config.mcpServers.length > 0;
-  const hasInjectedMcps = config.injectedMcps.length > 0;
-
-  if (!hasConfiguredMcps && !hasInjectedMcps) {
-    // No MCPs at all: skip everything for fastest startup
-    args.push("--strict-mcp-config");
-  } else if (hasInjectedMcps && !hasConfiguredMcps) {
-    // Only injected MCPs: use strict mode + inject via --mcp-config
-    args.push("--strict-mcp-config");
-    args.push("--mcp-config", buildMcpConfigJson(config.injectedMcps));
-  } else if (hasInjectedMcps && hasConfiguredMcps) {
-    // Both: let configured load normally + inject additional ones
+  // MCP server handling: always use strict mode so only explicitly selected MCPs run
+  args.push("--strict-mcp-config");
+  if (config.injectedMcps.length > 0) {
     args.push("--mcp-config", buildMcpConfigJson(config.injectedMcps));
   }
-  // hasConfiguredMcps && !hasInjectedMcps: no flags needed, all configured MCPs load
+
+  // IDE and Chrome integration flags
+  if (config.enableIde) args.push("--ide");
+  if (config.enableChrome) args.push("--chrome");
 
   // Initialize live stats
   const totalIterations = config.iterations;

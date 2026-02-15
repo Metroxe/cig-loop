@@ -40,7 +40,8 @@ const program = new Command()
   .option("-v, --verbose", "show raw JSON events", false)
   .option("--enable-mcps [servers]", "enable MCP servers: 'all' or comma-separated names (default: none)")
   .option("--mcp-inject <path>", "path to mcps.json file with injectable MCP servers")
-  .option("--computer-use", "enable desktop control via desktop-commander MCP", false)
+  .option("--ide", "enable IDE integration", false)
+  .option("--chrome", "enable Chrome browser integration", false)
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
 
@@ -122,9 +123,16 @@ async function resolveServerSources(servers: McpServerInfo[]): Promise<void> {
     const file = Bun.file(projectMcpPath);
     if (await file.exists()) {
       const content = await file.json();
-      for (const name of Object.keys(content.mcpServers || {})) {
+      const mcpServers = content.mcpServers || {};
+      for (const [name, def] of Object.entries(mcpServers)) {
         const match = servers.find((s) => s.name === name);
-        if (match && !match.source) match.source = `.mcp.json (project)`;
+        if (match && !match.source) {
+          match.source = `.mcp.json (project)`;
+          const typedDef = def as { command: string; args?: string[]; env?: Record<string, string> };
+          match.parsedCommand = typedDef.command;
+          match.parsedArgs = typedDef.args || [];
+          match.env = typedDef.env;
+        }
       }
     }
   } catch { /* skip */ }
@@ -137,17 +145,31 @@ async function resolveServerSources(servers: McpServerInfo[]): Promise<void> {
       const content = await file.json();
 
       // User-scope MCPs (top-level "mcpServers")
-      for (const name of Object.keys(content.mcpServers || {})) {
+      const userMcpServers = content.mcpServers || {};
+      for (const [name, def] of Object.entries(userMcpServers)) {
         const match = servers.find((s) => s.name === name);
-        if (match && !match.source) match.source = `~/.claude.json (user)`;
+        if (match && !match.source) {
+          match.source = `~/.claude.json (user)`;
+          const typedDef = def as { command: string; args?: string[]; env?: Record<string, string> };
+          match.parsedCommand = typedDef.command;
+          match.parsedArgs = typedDef.args || [];
+          match.env = typedDef.env;
+        }
       }
 
       // Local-scope MCPs (projects.<cwd>.mcpServers)
       const projectConfig = content.projects?.[cwd];
       if (projectConfig) {
-        for (const name of Object.keys(projectConfig.mcpServers || {})) {
+        const localMcpServers = projectConfig.mcpServers || {};
+        for (const [name, def] of Object.entries(localMcpServers)) {
           const match = servers.find((s) => s.name === name);
-          if (match && !match.source) match.source = `~/.claude.json (local)`;
+          if (match && !match.source) {
+            match.source = `~/.claude.json (local)`;
+            const typedDef = def as { command: string; args?: string[]; env?: Record<string, string> };
+            match.parsedCommand = typedDef.command;
+            match.parsedArgs = typedDef.args || [];
+            match.env = typedDef.env;
+          }
         }
       }
     }
@@ -166,10 +188,27 @@ async function resolveServerSources(servers: McpServerInfo[]): Promise<void> {
     }
   } catch { /* skip */ }
 
-  // Fallback
+  // Fallback: parse command string for servers not found in any config file
   for (const server of servers) {
     if (!server.source) server.source = "unknown source";
+    if (!server.parsedCommand) {
+      const parts = server.command.split(/\s+/);
+      server.parsedCommand = parts[0] || server.command;
+      server.parsedArgs = parts.slice(1);
+    }
   }
+}
+
+/**
+ * Convert a discovered MCP server into an injectable MCP definition.
+ */
+function mcpServerToInjectable(server: McpServerInfo): InjectableMcp {
+  return {
+    name: server.name,
+    command: server.parsedCommand || server.command.split(/\s+/)[0] || server.command,
+    args: server.parsedArgs || server.command.split(/\s+/).slice(1),
+    env: server.env,
+  };
 }
 
 /**
@@ -370,8 +409,7 @@ async function gatherConfig(): Promise<LoopConfig> {
   );
 
   // Phase 2: MCP server selection
-  let selectedMcps: string[] = [];
-  let selectedInjected: InjectableMcp[] = [];
+  let selectedMcps: InjectableMcp[] = [];
 
   // Load injectable MCPs from mcps.json (custom user-defined ones)
   const promptPath = (core.promptPath as string).trim();
@@ -477,20 +515,41 @@ async function gatherConfig(): Promise<LoopConfig> {
 
       const chosen = mcpChoices as string[];
 
-      // Split into configured vs injected
+      // Convert all choices to InjectableMcp definitions
       const allInjectables = [...customInjectables, ...BUILTIN_MCPS];
       for (const choice of chosen) {
         if (choice.startsWith("configured:")) {
-          selectedMcps.push(choice.substring("configured:".length));
+          const name = choice.substring("configured:".length);
+          const server = servers.find((s) => s.name === name);
+          if (server) selectedMcps.push(mcpServerToInjectable(server));
         } else if (choice.startsWith("inject:") || choice.startsWith("builtin:")) {
           const name = choice.replace(/^(inject|builtin):/, "");
           const mcp = allInjectables.find((m) => m.name === name);
-          if (mcp) selectedInjected.push(mcp);
+          if (mcp) selectedMcps.push(mcp);
         }
       }
     } else {
       p.log.info("No MCP servers available.");
     }
+  }
+
+  // Phase 3: IDE and Chrome integration toggles
+  const enableIde = await p.confirm({
+    message: "Enable IDE integration? (--ide)",
+    initialValue: false,
+  });
+  if (p.isCancel(enableIde)) {
+    p.cancel("Cancelled.");
+    process.exit(0);
+  }
+
+  const enableChrome = await p.confirm({
+    message: "Enable Chrome integration? (--chrome)",
+    initialValue: false,
+  });
+  if (p.isCancel(enableChrome)) {
+    p.cancel("Cancelled.");
+    process.exit(0);
   }
 
   p.outro(chalk.dim("Configuration complete."));
@@ -503,38 +562,42 @@ async function gatherConfig(): Promise<LoopConfig> {
     continueString: (core.continueString as string).trim() || undefined,
     logFile: (core.logFile as string).trim() || undefined,
     verbose: opts.verbose ?? false,
-    mcpServers: selectedMcps,
-    injectedMcps: selectedInjected,
+    injectedMcps: selectedMcps,
+    enableIde: enableIde as boolean,
+    enableChrome: enableChrome as boolean,
   };
 }
 
 async function buildConfigFromOpts(): Promise<LoopConfig> {
   const mcpFlag = parseMcpFlag(opts.enableMcps);
-  let mcpServers: string[] = [];
   let injectedMcps: InjectableMcp[] = [];
 
   if (mcpFlag === "all") {
+    // Discover all configured MCPs and convert to injectable format
     const servers = await discoverMcpServers();
-    mcpServers = servers.map((s) => s.name);
+    injectedMcps = servers.map(mcpServerToInjectable);
   } else if (Array.isArray(mcpFlag)) {
-    // Check if any of the names match built-in MCPs
-    const configuredNames: string[] = [];
+    // Check built-ins first, then discover configured MCPs for the rest
+    const remainingNames: string[] = [];
     for (const name of mcpFlag) {
       const builtin = BUILTIN_MCPS.find((m) => m.name === name);
       if (builtin) {
         injectedMcps.push(builtin);
       } else {
-        configuredNames.push(name);
+        remainingNames.push(name);
       }
     }
-    mcpServers = configuredNames;
-  }
 
-  // --computer-use shortcut: inject desktop-commander
-  if (opts.computerUse) {
-    const dc = BUILTIN_MCPS.find((m) => m.name === "desktop-commander");
-    if (dc && !injectedMcps.some((m) => m.name === dc.name)) {
-      injectedMcps.push(dc);
+    if (remainingNames.length > 0) {
+      const servers = await discoverMcpServers();
+      for (const name of remainingNames) {
+        const server = servers.find((s) => s.name === name);
+        if (server) {
+          injectedMcps.push(mcpServerToInjectable(server));
+        } else {
+          console.warn(chalk.yellow(`Warning: MCP server "${name}" not found in Claude config, skipping`));
+        }
+      }
     }
   }
 
@@ -542,7 +605,11 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
   const promptPath = opts.prompt || "./PROMPT.md";
   const customInjectables = await loadInjectableMcps(opts.mcpInject, promptPath);
   if (opts.mcpInject || mcpFlag !== "none") {
-    injectedMcps = [...injectedMcps, ...customInjectables];
+    for (const custom of customInjectables) {
+      if (!injectedMcps.some((m) => m.name === custom.name)) {
+        injectedMcps.push(custom);
+      }
+    }
   }
 
   return {
@@ -553,8 +620,9 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
     continueString: opts.continueString || undefined,
     logFile: opts.logFile || undefined,
     verbose: opts.verbose ?? false,
-    mcpServers,
     injectedMcps,
+    enableIde: opts.ide ?? false,
+    enableChrome: opts.chrome ?? false,
   };
 }
 
@@ -569,41 +637,16 @@ function buildRerunCommand(config: LoopConfig): string {
   if (config.continueString) parts.push("--continue-string", JSON.stringify(config.continueString));
   if (config.logFile) parts.push("--log-file", JSON.stringify(config.logFile));
   if (config.verbose) parts.push("-v");
-  if (config.mcpServers.length > 0) {
-    parts.push("--enable-mcps", config.mcpServers.join(","));
-  }
+
   if (config.injectedMcps.length > 0) {
-    // For re-run, reference built-in MCPs by name via --enable-mcps
-    // and custom mcps.json ones via --mcp-inject
-    const builtinNames = BUILTIN_MCPS.map((m) => m.name);
-    const injectedBuiltins = config.injectedMcps.filter((m) => builtinNames.includes(m.name));
-    const injectedCustom = config.injectedMcps.filter((m) => !builtinNames.includes(m.name));
-
-    // Use --computer-use shortcut if desktop-commander is the only injected built-in
-    const hasDesktopCommander = injectedBuiltins.some((m) => m.name === "desktop-commander");
-    const otherBuiltins = injectedBuiltins.filter((m) => m.name !== "desktop-commander");
-
-    if (hasDesktopCommander) {
-      parts.push("--computer-use");
-    }
-
-    if (otherBuiltins.length > 0) {
-      const allMcpNames = [
-        ...config.mcpServers,
-        ...otherBuiltins.map((m) => m.name),
-      ];
-      const enableIdx = parts.indexOf("--enable-mcps");
-      if (enableIdx !== -1) {
-        parts.splice(enableIdx, 2);
-      }
-      parts.push("--enable-mcps", allMcpNames.join(","));
-    }
-
-    if (injectedCustom.length > 0) {
-      const dir = config.promptPath.substring(0, config.promptPath.lastIndexOf("/") + 1) || "./";
-      parts.push("--mcp-inject", JSON.stringify(`${dir}mcps.json`));
-    }
+    // Reference all MCPs by name — buildConfigFromOpts will rediscover and convert them
+    const allNames = config.injectedMcps.map((m) => m.name);
+    parts.push("--enable-mcps", allNames.join(","));
   }
+
+  if (config.enableIde) parts.push("--ide");
+  if (config.enableChrome) parts.push("--chrome");
+
   parts.push("--no-interactive");
   parts.push("-i", String(config.iterations));
 
@@ -805,18 +848,14 @@ async function main(): Promise<void> {
   if (config.stopString) console.log(`  Stop:       "${config.stopString}"`);
   if (config.continueString) console.log(`  Continue:   "${config.continueString}"`);
   if (config.logFile) console.log(`  Log file:   ${config.logFile}`);
-  const hasMcps = config.mcpServers.length > 0 || config.injectedMcps.length > 0;
-  if (hasMcps) {
-    if (config.mcpServers.length > 0) {
-      console.log(`  MCPs:       ${config.mcpServers.join(", ")}`);
-    }
-    if (config.injectedMcps.length > 0) {
-      const injectedNames = config.injectedMcps.map((m) => m.name).join(", ");
-      console.log(`  Injected:   ${injectedNames}`);
-    }
+  if (config.injectedMcps.length > 0) {
+    const mcpNames = config.injectedMcps.map((m) => m.name).join(", ");
+    console.log(`  MCPs:       ${mcpNames}`);
   } else {
     console.log(`  MCPs:       disabled (use --enable-mcps or --mcp-inject to enable)`);
   }
+  if (config.enableIde) console.log(`  IDE:        enabled`);
+  if (config.enableChrome) console.log(`  Chrome:     enabled`);
   console.log("");
 
   // Run the loop

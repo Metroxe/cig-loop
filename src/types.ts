@@ -64,10 +64,12 @@ export interface LoopConfig {
   logFile?: string;
   /** Show raw JSON events */
   verbose: boolean;
-  /** Selected MCP server names to enable (empty = none) */
-  mcpServers: string[];
-  /** Injected MCP servers loaded from mcps.json or --mcp-inject flag */
+  /** All MCP servers to enable — passed via --mcp-config with --strict-mcp-config */
   injectedMcps: InjectableMcp[];
+  /** Enable IDE integration (--ide flag to Claude) */
+  enableIde?: boolean;
+  /** Enable Chrome integration (--chrome flag to Claude) */
+  enableChrome?: boolean;
 }
 
 /**
@@ -116,7 +118,7 @@ export interface StreamingBlock {
 export interface McpServerInfo {
   /** Server name (e.g. "plugin:playwright:playwright") */
   name: string;
-  /** Command + args (e.g. "npx @playwright/mcp@latest") */
+  /** Command + args as a single string from `claude mcp list` (e.g. "npx @playwright/mcp@latest") */
   command: string;
   /** Whether the server is healthy */
   healthy: boolean;
@@ -124,6 +126,12 @@ export interface McpServerInfo {
   status: string;
   /** Config source file path (e.g. "~/.claude/settings.json") */
   source?: string;
+  /** Parsed command executable (e.g. "npx"), extracted from config file or fallback */
+  parsedCommand?: string;
+  /** Parsed command arguments (e.g. ["@playwright/mcp@latest"]), extracted from config file or fallback */
+  parsedArgs?: string[];
+  /** Environment variables from config file */
+  env?: Record<string, string>;
 }
 
 /**

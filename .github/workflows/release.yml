@@ -63,6 +63,18 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Install cross-platform OpenTUI native modules
+        run: |
+          OPENTUI_VERSION=$(node -e "console.log(require('./node_modules/@opentui/core/package.json').version)")
+          cd node_modules/@opentui
+          for pkg in core-darwin-arm64 core-darwin-x64 core-linux-arm64; do
+            echo "Installing @opentui/$pkg@$OPENTUI_VERSION..."
+            npm pack @opentui/$pkg@$OPENTUI_VERSION --silent 2>/dev/null
+            mkdir -p $pkg
+            tar -xzf opentui-$pkg-*.tgz -C $pkg --strip-components=1
+            rm opentui-$pkg-*.tgz
+          done
+
       - name: Build all targets
         run: bun run build
         env:

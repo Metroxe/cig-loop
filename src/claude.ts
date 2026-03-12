@@ -100,6 +100,19 @@ export async function runClaudeIteration(
     proc.exited.then(() => signal.removeEventListener("abort", onAbort));
   }
 
+  // Per-iteration timeout
+  let timedOut = false;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  if (config.timeoutSeconds > 0 && proc.pid != null) {
+    timeoutTimer = setTimeout(async () => {
+      timedOut = true;
+      footer.writeln(chalk.yellow(`  ⏱ Timeout: iteration exceeded ${config.timeoutSeconds}s - killing process tree`));
+      await killProcessTree(proc.pid!, proc);
+    }, config.timeoutSeconds * 1000);
+    // Clear the timer if the process exits naturally
+    proc.exited.then(() => clearTimeout(timeoutTimer));
+  }
+
   let output = "";
   let tokenUsage: TokenUsage | undefined;
   let costUsd: number | undefined;
@@ -239,6 +252,7 @@ export async function runClaudeIteration(
     output,
     stopStringDetected,
     continueStringDetected,
+    timedOut,
     finalResponse: finalText,
   };
 }
@@ -619,6 +633,32 @@ function handleResult(
       ),
     );
   }
+}
+
+// ─── Process Tree Cleanup ──────────────────────────────────────────────
+
+/**
+ * Kill a process and all its children. Sends SIGTERM first, waits 5s,
+ * then SIGKILL to force-kill survivors.
+ */
+async function killProcessTree(pid: number, proc: ReturnType<typeof Bun.spawn>): Promise<void> {
+  try {
+    // Kill all children first (recursive via pkill -P)
+    await Bun.$`pkill -TERM -P ${pid}`.quiet().nothrow();
+  } catch { /* ignore */ }
+  try {
+    proc.kill("SIGTERM");
+  } catch { /* ignore */ }
+
+  // Grace period, then force-kill
+  await Bun.sleep(5000);
+
+  try {
+    await Bun.$`pkill -9 -P ${pid}`.quiet().nothrow();
+  } catch { /* ignore */ }
+  try {
+    proc.kill("SIGKILL");
+  } catch { /* ignore */ }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

@@ -1,0 +1,1 @@
+Write a haiku about programming, then read the contents of package.json in the current directory. After that, write another haiku about the project you see.

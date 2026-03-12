@@ -30,6 +30,8 @@ export interface IterationResult {
   stopStringDetected: boolean;
   /** Whether the continue string was detected */
   continueStringDetected: boolean;
+  /** Whether the iteration was killed due to timeout */
+  timedOut: boolean;
   /** The content of the final text block (last text block before iteration ended) */
   finalResponse: string;
 }
@@ -74,6 +76,8 @@ export interface LoopConfig {
   enableChrome?: boolean;
   /** Delay in seconds between iterations (0 = no delay) */
   delaySeconds: number;
+  /** Max wall-clock time per iteration in seconds (0 = no limit) */
+  timeoutSeconds: number;
   /** Per-bucket throttle thresholds (0 = disabled) */
   throttle: ThrottleConfig;
 }

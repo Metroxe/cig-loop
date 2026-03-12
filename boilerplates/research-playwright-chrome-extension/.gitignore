@@ -1,8 +1,0 @@
-# Secrets — never commit real credentials
-research.env
-
-# Sandbox working files
-sandbox/*/
-!sandbox/.gitkeep
-
-# Research assets are committed (screenshots, diagrams, etc.)

@@ -52,6 +52,7 @@ const program = new Command()
   .option("--ide", "enable IDE integration", false)
   .option("--chrome", "enable Chrome browser integration", false)
   .option("-d, --delay <seconds>", "delay in seconds between iterations", "0")
+  .option("-t, --timeout <seconds>", "max wall-clock time per iteration in seconds (0 = no limit)", "0")
   .option("--throttle-5h <percent>", "pause when 5h usage exceeds % (0=off)", "0")
   .option("--throttle-7d <percent>", "pause when 7d usage exceeds % (0=off)", "0")
   .option("--throttle-sonnet <percent>", "pause when sonnet/opus usage exceeds % (0=off)", "0")
@@ -649,6 +650,7 @@ async function gatherConfig(): Promise<LoopConfig> {
     enableIde: enableIde as boolean,
     enableChrome: enableChrome as boolean,
     delaySeconds: parseFloat(core.delaySeconds as string) || 0,
+    timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle,
   };
 }
@@ -710,6 +712,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
     enableIde: opts.ide ?? false,
     enableChrome: opts.chrome ?? false,
     delaySeconds: parseFloat(opts.delay) || 0,
+    timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle: {
       fiveHour: parseInt(opts.throttle5h, 10) || 0,
       sevenDay: parseInt(opts.throttle7d, 10) || 0,
@@ -738,6 +741,7 @@ function buildRerunCommand(config: LoopConfig): string {
   }
 
   if (config.delaySeconds > 0) parts.push("-d", String(config.delaySeconds));
+  if (config.timeoutSeconds > 0) parts.push("-t", String(config.timeoutSeconds));
   if (config.throttle.fiveHour > 0) parts.push("--throttle-5h", String(config.throttle.fiveHour));
   if (config.throttle.sevenDay > 0) parts.push("--throttle-7d", String(config.throttle.sevenDay));
   if (config.throttle.sonnet > 0) parts.push("--throttle-sonnet", String(config.throttle.sonnet));
@@ -948,8 +952,11 @@ async function runLoop(config: LoopConfig): Promise<void> {
     // Check non-zero exit code
     if (!result.success) {
       footer.writeln(chalk.yellow(`  Claude exited with code ${result.exitCode}`));
-      // Fatal signals (SIGKILL=137, SIGTERM=143, etc.) should stop the loop
-      if (result.exitCode >= 128) {
+      if (result.timedOut) {
+        footer.writeln(chalk.yellow(`  Iteration timed out after ${config.timeoutSeconds}s - continuing to next iteration`));
+        // Don't break — timeout is recoverable
+      } else if (result.exitCode >= 128) {
+        // Fatal signals (SIGKILL=137, SIGTERM=143, etc.) should stop the loop
         const signal = result.exitCode - 128;
         const signalName = { 9: "SIGKILL", 15: "SIGTERM", 11: "SIGSEGV", 6: "SIGABRT" }[signal] || `signal ${signal}`;
         stopReason = `Claude killed by ${signalName} (exit code ${result.exitCode}) on iteration ${i}`;
@@ -1055,6 +1062,7 @@ async function main(): Promise<void> {
   if (config.stopString) console.log(`  Stop:       "${config.stopString}"`);
   if (config.continueString) console.log(`  Continue:   "${config.continueString}"`);
   if (config.delaySeconds > 0) console.log(`  Delay:      ${config.delaySeconds}s between iterations`);
+  if (config.timeoutSeconds > 0) console.log(`  Timeout:    ${config.timeoutSeconds}s per iteration`);
   if (config.logFile) {
     const logDetails = config.maxLogLines > 0
       ? `${config.logFile} (rolling, max ${config.maxLogLines} lines)`

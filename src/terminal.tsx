@@ -446,16 +446,23 @@ export class StickyFooter {
   private maxLogLines: number;
   private logLineCount = 0;
   private usagePollInterval: ReturnType<typeof setInterval> | null = null;
+  private headless: boolean;
 
-  constructor(logFilePath?: string, maxLogLines = 0) {
+  constructor(logFilePath?: string, maxLogLines = 0, headless = false) {
     this.logFilePath = logFilePath;
     this.maxLogLines = maxLogLines;
+    this.headless = headless;
     if (logFilePath) {
       this.logWriter = Bun.file(logFilePath).writer();
     }
   }
 
   async activate(): Promise<void> {
+    if (this.headless) {
+      // In headless mode, skip TUI entirely — only log to file
+      return;
+    }
+
     this.renderer = await createCliRenderer({
       exitOnCtrlC: false,
       useAlternateScreen: true,
@@ -490,6 +497,8 @@ export class StickyFooter {
       clearInterval(this.usagePollInterval);
       this.usagePollInterval = null;
     }
+    if (this.headless) return;
+
     if (this.root) {
       this.root.unmount();
       this.root = null;
@@ -529,7 +538,7 @@ export class StickyFooter {
 
     if (this.renderer) {
       this.store.write(text, style);
-    } else {
+    } else if (!this.headless) {
       // Fallback: apply color inline via ANSI codes
       if (style === "orange") {
         process.stdout.write(text.replace(/[^\n]+/g, (m) => orange(m)));
@@ -543,8 +552,11 @@ export class StickyFooter {
     this.write(text + "\n", style);
   }
 
+  onLiveStats: ((stats: LiveIterationStats) => void) | null = null;
+
   setLiveStats(stats: LiveIterationStats): void {
     this.store.setLiveStats(stats);
+    this.onLiveStats?.(stats);
   }
 
   setCumulative(stats: CumulativeStats): void {

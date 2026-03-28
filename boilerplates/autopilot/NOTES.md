@@ -54,13 +54,11 @@ Use the `/create-vps <project-name>` skill to provision a VM on the Proxmox clus
 - Sets up an SSH config entry so the VM is accessible via `ssh <project-name>`
 - After provisioning, update the SSH Alias in the Deployment > VPS section above
 
-### Database
-Use the `/create-db <project-name>` skill to create a PostgreSQL database. The skill:
-- Creates a dedicated user and database on the shared PostgreSQL server (192.168.1.25)
-- Generates a secure password
-- Saves `DATABASE_URL` and related credentials to the local `.env`
-- The VPS is on the same 192.168.1.x network, so the same `DATABASE_URL` works in production
-- After creating the DB, SSH to the VPS and add the `DATABASE_URL` to the server's `.env` as well
+### Database / Services
+Databases (PostgreSQL, Redis, etc.) run as docker-compose services alongside the app — NOT standalone managed databases.
+- Add the service to `docker-compose.yml`
+- Configure the app's `.env` to point at the compose service (e.g., `DATABASE_URL=postgres://user:pass@db:5432/app`)
+- Use Docker volumes to persist data across container restarts
 
 ### Docker & Container Registry
 Use the `/docker-auth <vps-name>` skill to install Docker and authenticate to ghcr.io on the VPS. The skill:

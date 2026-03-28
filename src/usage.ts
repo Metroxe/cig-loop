@@ -107,6 +107,35 @@ function parseUsageResponse(data: unknown): UsageData {
 
 // ─── Throttle Check ─────────────────────────────────────────────────────
 
+/** Known total durations for each bucket window (in ms). */
+const BUCKET_PERIOD_MS = {
+  fiveHour: 5 * 60 * 60 * 1000,
+  sevenDay: 7 * 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Calculate the dynamic throttle threshold based on how far through the
+ * bucket's time window we are.
+ *
+ * e.g. 5.5 days into a 7-day window → 5.5/7 ≈ 78.6%
+ *
+ * Returns a percentage (0–100). Returns 100 if the window is about to reset
+ * (so we don't block right before a reset), or 0 if it just started.
+ */
+export function getDynamicThreshold(resetsAt: string, totalPeriodMs: number): number {
+  const now = Date.now();
+  const resetTime = new Date(resetsAt).getTime();
+  if (isNaN(resetTime)) return 100; // can't calculate, don't throttle
+
+  const timeRemaining = resetTime - now;
+  if (timeRemaining <= 0) return 100; // about to reset, allow full usage
+
+  const elapsed = totalPeriodMs - timeRemaining;
+  if (elapsed <= 0) return 0; // just started, no usage expected yet
+
+  return Math.round((elapsed / totalPeriodMs) * 100);
+}
+
 export interface ThrottleHit {
   bucket: string;
   utilization: number;
@@ -115,56 +144,95 @@ export interface ThrottleHit {
 }
 
 /**
+ * Check a single bucket against a threshold. Returns a ThrottleHit if over, null if OK.
+ */
+function checkBucket(
+  bucket: UsageBucket | null,
+  name: string,
+  threshold: number,
+): ThrottleHit | null {
+  if (threshold <= 0 || !bucket) return null;
+  if (bucket.utilization >= threshold) {
+    return {
+      bucket: name,
+      utilization: bucket.utilization,
+      threshold,
+      resetsAt: bucket.resetsAt,
+    };
+  }
+  return null;
+}
+
+/**
  * Check whether any usage bucket exceeds its configured threshold.
  * Returns the first bucket that exceeds, or null if all OK.
+ *
+ * In dynamic mode, thresholds are calculated from time elapsed in each window
+ * and ALL available buckets are checked.
  */
 export function checkThrottle(
   usage: UsageData,
   model: string | undefined,
   thresholds: ThrottleConfig,
 ): ThrottleHit | null {
-  // Check 5h bucket
-  if (thresholds.fiveHour > 0 && usage.fiveHour && usage.fiveHour.utilization >= thresholds.fiveHour) {
-    return {
-      bucket: "5h",
-      utilization: usage.fiveHour.utilization,
-      threshold: thresholds.fiveHour,
-      resetsAt: usage.fiveHour.resetsAt,
-    };
+  if (thresholds.dynamic) {
+    return checkThrottleDynamic(usage, model);
   }
 
-  // Check 7d bucket
-  if (thresholds.sevenDay > 0 && usage.sevenDay && usage.sevenDay.utilization >= thresholds.sevenDay) {
-    return {
-      bucket: "7d",
-      utilization: usage.sevenDay.utilization,
-      threshold: thresholds.sevenDay,
-      resetsAt: usage.sevenDay.resetsAt,
-    };
-  }
+  // Static mode: check each bucket against its fixed threshold
+  const hit5h = checkBucket(usage.fiveHour, "5h", thresholds.fiveHour);
+  if (hit5h) return hit5h;
+
+  const hit7d = checkBucket(usage.sevenDay, "7d", thresholds.sevenDay);
+  if (hit7d) return hit7d;
 
   // Check model-specific bucket
   if (thresholds.sonnet > 0) {
     const isOpus = model && model.toLowerCase().includes("opus");
     if (isOpus) {
-      if (usage.sevenDayOpus && usage.sevenDayOpus.utilization >= thresholds.sonnet) {
-        return {
-          bucket: "opus",
-          utilization: usage.sevenDayOpus.utilization,
-          threshold: thresholds.sonnet,
-          resetsAt: usage.sevenDayOpus.resetsAt,
-        };
-      }
+      const hit = checkBucket(usage.sevenDayOpus, "opus", thresholds.sonnet);
+      if (hit) return hit;
     } else {
-      // Default to sonnet bucket (covers sonnet + unspecified model)
-      if (usage.sevenDaySonnet && usage.sevenDaySonnet.utilization >= thresholds.sonnet) {
-        return {
-          bucket: "sonnet",
-          utilization: usage.sevenDaySonnet.utilization,
-          threshold: thresholds.sonnet,
-          resetsAt: usage.sevenDaySonnet.resetsAt,
-        };
-      }
+      const hit = checkBucket(usage.sevenDaySonnet, "sonnet", thresholds.sonnet);
+      if (hit) return hit;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Dynamic throttle: threshold for each bucket is calculated from how far
+ * through its time window we are. All available buckets are checked.
+ */
+function checkThrottleDynamic(
+  usage: UsageData,
+  model: string | undefined,
+): ThrottleHit | null {
+  // 5h bucket
+  if (usage.fiveHour) {
+    const threshold = getDynamicThreshold(usage.fiveHour.resetsAt, BUCKET_PERIOD_MS.fiveHour);
+    const hit = checkBucket(usage.fiveHour, "5h", threshold);
+    if (hit) return hit;
+  }
+
+  // 7d all-models bucket
+  if (usage.sevenDay) {
+    const threshold = getDynamicThreshold(usage.sevenDay.resetsAt, BUCKET_PERIOD_MS.sevenDay);
+    const hit = checkBucket(usage.sevenDay, "7d", threshold);
+    if (hit) return hit;
+  }
+
+  // Model-specific 7d bucket (only check when model is known)
+  if (model) {
+    const isOpus = model.toLowerCase().includes("opus");
+    const isSonnet = model.toLowerCase().includes("sonnet");
+    const modelBucket = isOpus ? usage.sevenDayOpus : isSonnet ? usage.sevenDaySonnet : null;
+    const modelName = isOpus ? "opus" : "sonnet";
+    if (modelBucket) {
+      const threshold = getDynamicThreshold(modelBucket.resetsAt, BUCKET_PERIOD_MS.sevenDay);
+      const hit = checkBucket(modelBucket, modelName, threshold);
+      if (hit) return hit;
     }
   }
 

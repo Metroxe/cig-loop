@@ -16,6 +16,7 @@ import { formatCost, formatDuration, formatNumber } from "./format.js";
 import { StickyFooter } from "./terminal.js";
 import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import { VERSION, checkForUpdate } from "./version.js";
+import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
 import { fetchUsage, checkThrottle, formatResetTime } from "./usage.js";
 
@@ -30,6 +31,12 @@ if (process.argv[2] === "boilerplate") {
 if (process.argv[2] === "update") {
   const { runUpdate } = await import("./update.js");
   await runUpdate();
+  process.exit(0);
+}
+
+if (["list", "status", "stop", "logs", "pause", "resume"].includes(process.argv[2] || "")) {
+  const { runClientCommand } = await import("./daemon-cli.js");
+  await runClientCommand(process.argv[2] as string, process.argv[3]);
   process.exit(0);
 }
 
@@ -56,6 +63,8 @@ const program = new Command()
   .option("--throttle-5h <percent>", "pause when 5h usage exceeds % (0=off)", "0")
   .option("--throttle-7d <percent>", "pause when 7d usage exceeds % (0=off)", "0")
   .option("--throttle-sonnet <percent>", "pause when sonnet/opus usage exceeds % (0=off)", "0")
+  .option("--throttle-dynamic", "dynamic throttle: pace usage proportionally across each window", false)
+  .option("--daemon", "run headless as a daemon with a control socket", false)
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
 
@@ -586,53 +595,71 @@ async function gatherConfig(): Promise<LoopConfig> {
     process.exit(0);
   }
 
-  let throttle: ThrottleConfig = { fiveHour: 0, sevenDay: 0, sonnet: 0 };
+  let throttle: ThrottleConfig = { fiveHour: 0, sevenDay: 0, sonnet: 0, dynamic: false };
   if (wantThrottle) {
-    const throttleInputs = await p.group(
-      {
-        fiveHour: () =>
-          p.text({
-            message: "5h usage threshold % (0 = off)",
-            initialValue: "90",
-            validate: (val) => {
-              const n = parseInt(val || "", 10);
-              if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-              return undefined;
-            },
-          }),
-        sevenDay: () =>
-          p.text({
-            message: "7d usage threshold % (0 = off)",
-            initialValue: "80",
-            validate: (val) => {
-              const n = parseInt(val || "", 10);
-              if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-              return undefined;
-            },
-          }),
-        sonnet: () =>
-          p.text({
-            message: "Sonnet/Opus usage threshold % (0 = off)",
-            initialValue: "80",
-            validate: (val) => {
-              const n = parseInt(val || "", 10);
-              if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-              return undefined;
-            },
-          }),
-      },
-      {
-        onCancel: () => {
-          p.cancel("Cancelled.");
-          process.exit(0);
+    const throttleMode = await p.select({
+      message: "Throttle mode",
+      options: [
+        { value: "dynamic", label: "Dynamic — pace usage proportionally across each window" },
+        { value: "static", label: "Static — fixed percentage thresholds" },
+      ],
+      initialValue: "dynamic",
+    });
+    if (p.isCancel(throttleMode)) {
+      p.cancel("Cancelled.");
+      process.exit(0);
+    }
+
+    if (throttleMode === "dynamic") {
+      throttle = { fiveHour: 0, sevenDay: 0, sonnet: 0, dynamic: true };
+    } else {
+      const throttleInputs = await p.group(
+        {
+          fiveHour: () =>
+            p.text({
+              message: "5h usage threshold % (0 = off)",
+              initialValue: "90",
+              validate: (val) => {
+                const n = parseInt(val || "", 10);
+                if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
+                return undefined;
+              },
+            }),
+          sevenDay: () =>
+            p.text({
+              message: "7d usage threshold % (0 = off)",
+              initialValue: "80",
+              validate: (val) => {
+                const n = parseInt(val || "", 10);
+                if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
+                return undefined;
+              },
+            }),
+          sonnet: () =>
+            p.text({
+              message: "Sonnet/Opus usage threshold % (0 = off)",
+              initialValue: "80",
+              validate: (val) => {
+                const n = parseInt(val || "", 10);
+                if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
+                return undefined;
+              },
+            }),
         },
-      },
-    );
-    throttle = {
-      fiveHour: parseInt(throttleInputs.fiveHour as string, 10) || 0,
-      sevenDay: parseInt(throttleInputs.sevenDay as string, 10) || 0,
-      sonnet: parseInt(throttleInputs.sonnet as string, 10) || 0,
-    };
+        {
+          onCancel: () => {
+            p.cancel("Cancelled.");
+            process.exit(0);
+          },
+        },
+      );
+      throttle = {
+        fiveHour: parseInt(throttleInputs.fiveHour as string, 10) || 0,
+        sevenDay: parseInt(throttleInputs.sevenDay as string, 10) || 0,
+        sonnet: parseInt(throttleInputs.sonnet as string, 10) || 0,
+        dynamic: false,
+      };
+    }
   }
 
   p.outro(chalk.dim("Configuration complete."));
@@ -717,6 +744,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
       fiveHour: parseInt(opts.throttle5h, 10) || 0,
       sevenDay: parseInt(opts.throttle7d, 10) || 0,
       sonnet: parseInt(opts.throttleSonnet, 10) || 0,
+      dynamic: opts.throttleDynamic ?? false,
     },
   };
 }
@@ -742,9 +770,13 @@ function buildRerunCommand(config: LoopConfig): string {
 
   if (config.delaySeconds > 0) parts.push("-d", String(config.delaySeconds));
   if (config.timeoutSeconds > 0) parts.push("-t", String(config.timeoutSeconds));
-  if (config.throttle.fiveHour > 0) parts.push("--throttle-5h", String(config.throttle.fiveHour));
-  if (config.throttle.sevenDay > 0) parts.push("--throttle-7d", String(config.throttle.sevenDay));
-  if (config.throttle.sonnet > 0) parts.push("--throttle-sonnet", String(config.throttle.sonnet));
+  if (config.throttle.dynamic) {
+    parts.push("--throttle-dynamic");
+  } else {
+    if (config.throttle.fiveHour > 0) parts.push("--throttle-5h", String(config.throttle.fiveHour));
+    if (config.throttle.sevenDay > 0) parts.push("--throttle-7d", String(config.throttle.sevenDay));
+    if (config.throttle.sonnet > 0) parts.push("--throttle-sonnet", String(config.throttle.sonnet));
+  }
   if (config.enableIde) parts.push("--ide");
   if (config.enableChrome) parts.push("--chrome");
 
@@ -812,8 +844,8 @@ async function ensureLogFileInGitignore(logFile: string): Promise<void> {
 
 // ─── Cig Loop ──────────────────────────────────────────────────────────
 
-async function runLoop(config: LoopConfig): Promise<void> {
-  const footer = new StickyFooter(config.logFile, config.maxLogLines);
+async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<void> {
+  const footer = new StickyFooter(config.logFile, config.maxLogLines, !!daemon);
   const cumulative: CumulativeStats = {
     completedIterations: 0,
     totalDurationMs: 0,
@@ -838,6 +870,7 @@ async function runLoop(config: LoopConfig): Promise<void> {
     footer.deactivate();
     printFinalSummary(cumulative, config, "user interrupted (Ctrl+C)");
     footer.closeLog();
+    daemon?.shutdown();
     process.exit(0);
   };
   process.on("SIGINT", cleanup);
@@ -850,6 +883,7 @@ async function runLoop(config: LoopConfig): Promise<void> {
     const errMsg = err instanceof Error ? err.message : String(err);
     printFinalSummary(cumulative, config, `fatal error: ${errMsg}`);
     footer.closeLog();
+    daemon?.shutdown();
     process.exit(1);
   };
   process.on("uncaughtException", crashCleanup);
@@ -857,12 +891,36 @@ async function runLoop(config: LoopConfig): Promise<void> {
 
   await footer.activate();
 
+  // Hook live stats into daemon state
+  if (daemon) {
+    footer.onLiveStats = (stats) => daemon.setLive(stats);
+  }
+
   const maxIterations = config.iterations === 0 ? Infinity : config.iterations;
   let stopReason: string | undefined;
 
   for (let i = 1; i <= maxIterations; i++) {
+    // Daemon: check for stop/pause signals
+    if (daemon) {
+      if (daemon.isStopRequested) {
+        stopReason = "stopped via daemon control";
+        break;
+      }
+      while (daemon.isPauseRequested) {
+        daemon.setPhase("paused");
+        await Bun.sleep(1000);
+        if (daemon.isStopRequested) break;
+      }
+      if (daemon.isStopRequested) {
+        stopReason = "stopped via daemon control";
+        break;
+      }
+      daemon.setPhase("running");
+      daemon.setIteration(i);
+    }
+
     // Throttle check: pause if any usage bucket exceeds its threshold
-    const hasThrottle = config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
+    const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
       while (true) {
         const usage = await fetchUsage(i > 1);
@@ -870,8 +928,10 @@ async function runLoop(config: LoopConfig): Promise<void> {
         const hit = checkThrottle(usage, config.model, config.throttle);
         if (!hit) {
           footer.setUsage(usage);
+          if (daemon) daemon.setPhase("running");
           break; // under threshold
         }
+        if (daemon) daemon.setPhase("throttled");
         footer.writeln(
           chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Checking in 60s...`)
         );
@@ -909,6 +969,10 @@ async function runLoop(config: LoopConfig): Promise<void> {
     cumulative.totalInputTokens += result.tokenUsage?.inputTokens || 0;
     cumulative.totalOutputTokens += result.tokenUsage?.outputTokens || 0;
     footer.setCumulative(cumulative);
+    if (daemon) {
+      daemon.setCumulative(cumulative);
+      daemon.setLive(null);
+    }
 
     // Print iteration summary in scroll area
     footer.writeln("");
@@ -987,9 +1051,14 @@ async function runLoop(config: LoopConfig): Promise<void> {
   process.removeListener("uncaughtException", crashCleanup);
   process.removeListener("unhandledRejection", crashCleanup);
 
-  printFinalSummary(cumulative, config, stopReason || "loop finished");
+  const finalReason = stopReason || "loop finished";
+  if (daemon) {
+    daemon.setStopReason(finalReason);
+  }
+  printFinalSummary(cumulative, config, finalReason);
 
   await footer.closeLog();
+  await daemon?.shutdown();
 }
 
 // ─── Final Summary ─────────────────────────────────────────────────────
@@ -1035,6 +1104,12 @@ async function main(): Promise<void> {
   // Validate
   await validateConfig(config);
 
+  // Daemon mode: auto-enable log file if not set
+  const isDaemon = opts.daemon === true;
+  if (isDaemon && !config.logFile) {
+    config.logFile = `cig-loop-${Date.now()}.log`;
+  }
+
   // Ensure log file is gitignored
   if (config.logFile) await ensureLogFileInGitignore(config.logFile);
 
@@ -1075,21 +1150,42 @@ async function main(): Promise<void> {
   } else {
     console.log(`  MCPs:       disabled (use --enable-mcps or --mcp-inject to enable)`);
   }
-  const throttleParts: string[] = [];
-  if (config.throttle.fiveHour > 0) throttleParts.push(`5h: ${config.throttle.fiveHour}%`);
-  if (config.throttle.sevenDay > 0) throttleParts.push(`7d: ${config.throttle.sevenDay}%`);
-  if (config.throttle.sonnet > 0) throttleParts.push(`sonnet: ${config.throttle.sonnet}%`);
-  if (throttleParts.length > 0) {
-    console.log(`  Throttle:   ${throttleParts.join(", ")}`);
+  if (config.throttle.dynamic) {
+    console.log(`  Throttle:   dynamic (pace usage across each window)`);
   } else {
-    console.log(`  Throttle:   disabled`);
+    const throttleParts: string[] = [];
+    if (config.throttle.fiveHour > 0) throttleParts.push(`5h: ${config.throttle.fiveHour}%`);
+    if (config.throttle.sevenDay > 0) throttleParts.push(`7d: ${config.throttle.sevenDay}%`);
+    if (config.throttle.sonnet > 0) throttleParts.push(`sonnet: ${config.throttle.sonnet}%`);
+    if (throttleParts.length > 0) {
+      console.log(`  Throttle:   ${throttleParts.join(", ")}`);
+    } else {
+      console.log(`  Throttle:   disabled`);
+    }
   }
   if (config.enableIde) console.log(`  IDE:        enabled`);
   if (config.enableChrome) console.log(`  Chrome:     enabled`);
+  if (isDaemon) console.log(`  Mode:       ${chalk.cyan("daemon")}`);
   console.log("");
 
+  // Start daemon controller if in daemon mode
+  let daemon: DaemonController | undefined;
+  if (isDaemon) {
+    daemon = new DaemonController(config);
+    if (config.logFile) daemon.setLogFile(config.logFile);
+    await daemon.start();
+    await daemon.persistState(config.logFile);
+    console.log(chalk.cyan(`  Daemon ID:  ${daemon.id}`));
+    console.log(chalk.cyan(`  Socket:     ${daemon.socketPath}`));
+    console.log(chalk.cyan(`  Log:        ${config.logFile}`));
+    console.log("");
+    console.log(chalk.dim("  Use 'cig-loop status' to check progress"));
+    console.log(chalk.dim("  Use 'cig-loop stop' to stop the daemon"));
+    console.log("");
+  }
+
   // Run the loop
-  await runLoop(config);
+  await runLoop(config, daemon);
 }
 
 main().catch((err) => {

@@ -186,4 +186,6 @@ export interface ThrottleConfig {
   fiveHour: number;
   sevenDay: number;
   sonnet: number;
+  /** When true, thresholds are calculated dynamically based on time elapsed in each bucket's window */
+  dynamic: boolean;
 }

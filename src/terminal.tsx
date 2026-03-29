@@ -36,6 +36,7 @@ interface StoreState {
   cumulative: CumulativeStats;
   usage: UsageData | null;
   usageError: boolean;
+  usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
 }
 
@@ -58,6 +59,7 @@ class TerminalStore {
       },
       usage: null,
       usageError: false,
+      usageLastAttempt: 0,
       throttleConfig: null,
     };
   }
@@ -135,6 +137,7 @@ class TerminalStore {
 
   setUsageError(): void {
     this.state.usageError = true;
+    this.state.usageLastAttempt = Date.now();
     this.emit();
   }
 
@@ -322,6 +325,7 @@ function Footer({
   cumulative: CumulativeStats;
   usage: UsageData | null;
   usageError: boolean;
+  usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
 }) {
   const [now, setNow] = useState(Date.now());
@@ -389,8 +393,8 @@ function Footer({
             const cap7d = isDynamic && usage.sevenDay ? getDynamicThreshold(usage.sevenDay.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
             const capModel = isDynamic && usage.sevenDaySonnet ? getDynamicThreshold(usage.sevenDaySonnet.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
             const ageMs = now - usage.fetchedAt;
-            const isStale = ageMs > 5 * 60 * 1000; // >5 min old
-            const ageLabel = isStale ? ` [${Math.round(ageMs / 60_000)}m ago]` : "";
+            const ageSec = Math.round(ageMs / 1000);
+            const ageLabel = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
@@ -423,21 +427,25 @@ function Footer({
               <span attributes={TextAttributes.DIM}>
                 {` (${usage.sevenDaySonnet ? formatResetTime(usage.sevenDaySonnet.resetsAt) : "?"})`}
               </span>
-              {isStale ? (
-                <span fg="#FF9500">{ageLabel}</span>
-              ) : null}
+              <span attributes={TextAttributes.DIM}>{" | "}</span>
+              <span fg={ageMs > 5 * 60 * 1000 ? "#FF9500" : "#888888"}>{ageLabel}</span>
             </text>
             );
-          })() : (
+          })() : (() => {
+            const POLL_INTERVAL = 120;
+            const secSinceAttempt = usageLastAttempt > 0 ? Math.round((now - usageLastAttempt) / 1000) : 0;
+            const nextCheckIn = Math.max(0, POLL_INTERVAL - secSinceAttempt);
+            return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
               {usageError ? (
-                <span fg="#FF9500">{"rate-limited (will retry after iteration)"}</span>
+                <span fg="#FF9500">{`rate-limited | next check ${nextCheckIn}s`}</span>
               ) : (
                 <span attributes={TextAttributes.DIM}>{"loading..."}</span>
               )}
             </text>
-          )}
+            );
+          })()}
         </box>
         {!isWide && <text><span>{" "}</span></text>}
         <SmokingCigarette />
@@ -474,7 +482,7 @@ function App({ store }: { store: TerminalStore }) {
           </text>
         ) : null}
       </scrollbox>
-      <Footer liveStats={state.liveStats} cumulative={state.cumulative} usage={state.usage} usageError={state.usageError} throttleConfig={state.throttleConfig} />
+      <Footer liveStats={state.liveStats} cumulative={state.cumulative} usage={state.usage} usageError={state.usageError} usageLastAttempt={state.usageLastAttempt} throttleConfig={state.throttleConfig} />
     </box>
   );
 }

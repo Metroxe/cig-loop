@@ -108,7 +108,7 @@ function parseUsageResponse(data: unknown): UsageData {
 // ─── Throttle Check ─────────────────────────────────────────────────────
 
 /** Known total durations for each bucket window (in ms). */
-const BUCKET_PERIOD_MS = {
+export const BUCKET_PERIOD_MS = {
   fiveHour: 5 * 60 * 60 * 1000,
   sevenDay: 7 * 24 * 60 * 60 * 1000,
 } as const;

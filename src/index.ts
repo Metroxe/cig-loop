@@ -890,6 +890,7 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
   process.on("unhandledRejection", crashCleanup);
 
   await footer.activate();
+  footer.setThrottleConfig(config.throttle);
 
   // Hook live stats into daemon state
   if (daemon) {
@@ -919,11 +920,17 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
       daemon.setIteration(i);
     }
 
+    // Always refresh usage at iteration start so the footer stays up-to-date
+    {
+      const usage = await fetchUsage(i > 1);
+      if (usage) footer.setUsage(usage);
+    }
+
     // Throttle check: pause if any usage bucket exceeds its threshold
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
       while (true) {
-        const usage = await fetchUsage(i > 1);
+        const usage = await fetchUsage(true);
         if (!usage) break; // can't check, proceed
         const hit = checkThrottle(usage, config.model, config.throttle);
         if (!hit) {

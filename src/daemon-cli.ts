@@ -8,6 +8,7 @@ import chalk from "chalk";
 import { listRuns, findRun, daemonRequest, type RunInfo } from "./daemon.js";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
 import { StickyFooter, type ControlAction } from "./terminal.js";
+import { UsagePoller } from "./usage.js";
 
 export async function runClientCommand(command: string, arg?: string): Promise<void> {
   switch (command) {
@@ -201,6 +202,12 @@ export async function cmdAttach(idPrefix?: string): Promise<void> {
   const footer = new StickyFooter(undefined, 0, false);
   await footer.activate();
 
+  // Usage poller — picks up data from the daemon via shared disk cache
+  const usagePoller = new UsagePoller();
+  usagePoller.onUsage = (usage) => footer.setUsage(usage);
+  usagePoller.onError = (error) => footer.setUsageFetchError(error);
+  await usagePoller.start();
+
   // Load existing log content as scrollback
   const logFile = status.logFile;
   let tailOffset = 0;
@@ -234,6 +241,7 @@ export async function cmdAttach(idPrefix?: string): Promise<void> {
     if (exiting) return;
     exiting = true;
     clearInterval(pollTimer);
+    usagePoller.stop();
 
     // Fetch final status
     let finalStatus = status;

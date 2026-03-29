@@ -319,6 +319,7 @@ function Footer({
   cumulative,
   usage,
   usageError,
+  usageLastAttempt,
   throttleConfig,
 }: {
   liveStats: LiveIterationStats | null;

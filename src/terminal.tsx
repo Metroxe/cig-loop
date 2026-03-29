@@ -539,6 +539,7 @@ export class StickyFooter {
     this.usagePollInterval = setInterval(() => {
       fetchUsage(true).then((usage) => {
         if (usage) this.store.setUsage(usage);
+        else if (!this.store.getSnapshot().usage) this.store.setUsageError();
       });
     }, 120_000);
   }

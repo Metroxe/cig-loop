@@ -1336,7 +1336,15 @@ function spawnDaemonChild(config: LoopConfig) {
   if (config.enableChrome) args.push("--chrome");
   if (config.chromeCdpPort > 0) args.push("--chrome-cdp", String(config.chromeCdpPort));
 
-  const proc = Bun.spawn(["bun", "src/index.ts", ...args], {
+  // Use process.execPath so this works both in dev (bun src/index.ts)
+  // and as a compiled binary (cig-loop). For compiled binaries, argv[0]
+  // is the binary itself; for dev, we need bun + the entrypoint.
+  const isBundled = !process.argv[1]?.endsWith(".ts");
+  const cmd = isBundled
+    ? [process.execPath, ...args]
+    : [process.execPath, process.argv[1]!, ...args];
+
+  const proc = Bun.spawn(cmd, {
     cwd: process.cwd(),
     stdio: ["ignore", "ignore", "ignore"],
     env: process.env,

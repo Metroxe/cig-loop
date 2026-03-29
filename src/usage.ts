@@ -11,7 +11,7 @@ import type { UsageBucket, UsageData, ThrottleConfig } from "./types.js";
 
 const DISK_CACHE_PATH = `${process.env.HOME || "~"}/.cache/cig-loop/usage.json`;
 
-async function loadDiskCache(): Promise<UsageData | null> {
+export async function loadDiskCache(): Promise<UsageData | null> {
   try {
     const file = Bun.file(DISK_CACHE_PATH);
     if (!(await file.exists())) return null;

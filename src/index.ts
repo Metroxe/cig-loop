@@ -920,13 +920,6 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
       daemon.setIteration(i);
     }
 
-    // Ensure usage is displayed (uses cache from post-iteration fetch, or
-    // attempts a fresh fetch on the first iteration / if cache is stale)
-    {
-      const usage = await fetchUsage(false);
-      if (usage) footer.setUsage(usage);
-    }
-
     // Throttle check: pause if any usage bucket exceeds its threshold
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
@@ -1039,11 +1032,10 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
 
     // Refresh usage now that Claude Code has exited (the usage endpoint is
     // aggressively rate-limited while Claude Code is running — this is the
-    // best window to get fresh data).
-    {
-      const usage = await fetchUsage(true, 3);
+    // best window to get fresh data). Fire-and-forget so it never blocks.
+    fetchUsage(true, 3).then((usage) => {
       if (usage) footer.setUsage(usage);
-    }
+    });
 
     // Trim log if over the line limit
     await footer.flushAndTrimLog();

@@ -15,7 +15,7 @@ import { useState, useEffect, useSyncExternalStore } from "react";
 import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber, stripAnsi } from "./format.js";
 import { AnsiText } from "./ansi.js";
-import { fetchUsage, formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
+import { fetchUsage, loadDiskCache, formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
 import type { CumulativeStats, LiveIterationStats, UsageData, ThrottleConfig } from "./types.js";
 
 const orange = chalk.hex("#FF9500");
@@ -505,7 +505,12 @@ export class StickyFooter {
       }
     });
 
-    // Start background usage polling
+    // Load disk-cached usage immediately so the footer has data on startup,
+    // then try a live fetch (fire-and-forget — will likely 429 while Claude
+    // Code is running, but updates the display if it succeeds).
+    loadDiskCache().then((usage) => {
+      if (usage) this.store.setUsage(usage);
+    });
     fetchUsage().then((usage) => {
       if (usage) this.store.setUsage(usage);
     });

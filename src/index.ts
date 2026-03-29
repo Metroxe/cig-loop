@@ -18,7 +18,8 @@ import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import { VERSION, checkForUpdate } from "./version.js";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
-import { fetchUsage, checkThrottle, formatResetTime } from "./usage.js";
+import { fetchUsage, checkThrottle, formatResetTime, saveDiskCache } from "./usage.js";
+import { scrapeUsage } from "./usage-scraper.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ const program = new Command()
   .option("--throttle-7d <percent>", "pause when 7d usage exceeds % (0=off)", "0")
   .option("--throttle-sonnet <percent>", "pause when sonnet/opus usage exceeds % (0=off)", "0")
   .option("--throttle-dynamic", "dynamic throttle: pace usage proportionally across each window", false)
+  .option("--chrome-cdp <port>", "scrape usage from claude.ai via Chrome CDP port (bypasses API rate limit)")
   .option("--daemon", "run headless as a daemon with a control socket", false)
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
@@ -746,6 +748,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
       sonnet: parseInt(opts.throttleSonnet, 10) || 0,
       dynamic: opts.throttleDynamic ?? false,
     },
+    chromeCdpPort: parseInt(opts.chromeCdp, 10) || 0,
   };
 }
 
@@ -779,6 +782,7 @@ function buildRerunCommand(config: LoopConfig): string {
   }
   if (config.enableIde) parts.push("--ide");
   if (config.enableChrome) parts.push("--chrome");
+  if (config.chromeCdpPort > 0) parts.push("--chrome-cdp", String(config.chromeCdpPort));
 
   parts.push("--no-interactive");
   parts.push("-i", String(config.iterations));
@@ -1033,9 +1037,18 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
     // Refresh usage now that Claude Code has exited (the usage endpoint is
     // aggressively rate-limited while Claude Code is running — this is the
     // best window to get fresh data). Fire-and-forget so it never blocks.
-    fetchUsage(true, 3).then((usage) => {
-      if (usage) footer.setUsage(usage);
-    });
+    if (config.chromeCdpPort > 0) {
+      scrapeUsage(config.chromeCdpPort).then((usage) => {
+        if (usage) {
+          footer.setUsage(usage);
+          saveDiskCache(usage);
+        }
+      });
+    } else {
+      fetchUsage(true, 3).then((usage) => {
+        if (usage) footer.setUsage(usage);
+      });
+    }
 
     // Trim log if over the line limit
     await footer.flushAndTrimLog();

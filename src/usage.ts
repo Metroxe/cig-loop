@@ -23,7 +23,7 @@ export async function loadDiskCache(): Promise<UsageData | null> {
   }
 }
 
-async function saveDiskCache(usage: UsageData): Promise<void> {
+export async function saveDiskCache(usage: UsageData): Promise<void> {
   try {
     await Bun.write(DISK_CACHE_PATH, JSON.stringify(usage));
   } catch {

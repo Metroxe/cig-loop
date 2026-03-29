@@ -80,6 +80,8 @@ export interface LoopConfig {
   timeoutSeconds: number;
   /** Per-bucket throttle thresholds (0 = disabled) */
   throttle: ThrottleConfig;
+  /** Chrome CDP port for scraping usage from claude.ai (0 = disabled) */
+  chromeCdpPort: number;
 }
 
 /**

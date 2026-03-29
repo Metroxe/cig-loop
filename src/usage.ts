@@ -391,21 +391,25 @@ export class UsagePoller {
       let usage: UsageData | null = null;
       let errorMsg: string | null = null;
 
-      // Try CDP if configured
-      if (this.cdpPort > 0) {
-        usage = await scrapeUsage(this.cdpPort);
-        if (!usage) errorMsg = "CDP scrape failed";
+      // Try API first (quick, no browser overhead)
+      {
+        const beforeFetchedAt = cachedUsage?.fetchedAt ?? 0;
+        usage = await fetchUsage(true, 0);
+        // fetchUsage returns stale cache on failure — detect by checking fetchedAt
+        if (usage && usage.fetchedAt <= beforeFetchedAt) {
+          usage = null;
+        }
       }
 
-      // Try API (as primary if no CDP, or as fallback if CDP failed)
+      // Fall back to CDP scrape if API failed and CDP is configured
+      if (!usage && this.cdpPort > 0) {
+        usage = await scrapeUsage(this.cdpPort);
+      }
+
       if (!usage) {
-        const retries = this.cdpPort > 0 ? 0 : 3;
-        usage = await fetchUsage(true, retries);
-        if (!usage) {
-          errorMsg = this.cdpPort > 0
-            ? "CDP scrape + API fallback failed"
-            : "API fetch failed (rate-limited)";
-        }
+        errorMsg = this.cdpPort > 0
+          ? "API + CDP scrape failed"
+          : "API fetch failed (rate-limited)";
       }
 
       if (usage) {

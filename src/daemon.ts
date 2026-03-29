@@ -28,6 +28,7 @@ export interface DaemonState {
   stopReason?: string;
   logFile?: string;
   throttleConfig?: ThrottleConfig | null;
+  chromeCdpPort?: number;
 }
 
 // ─── ID Generation ──────────────────────────────────────────────────────
@@ -218,6 +219,10 @@ export class DaemonController {
 
   setThrottleConfig(config: ThrottleConfig | null): void {
     this.state.throttleConfig = config;
+  }
+
+  setChromeCdpPort(port: number): void {
+    this.state.chromeCdpPort = port;
   }
 
   private async getLogTail(lines: number): Promise<Response> {

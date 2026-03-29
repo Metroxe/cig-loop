@@ -912,6 +912,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   await footer.activate();
   footer.setThrottleConfig(config.throttle);
   daemon.setThrottleConfig(config.throttle);
+  if (config.chromeCdpPort > 0) daemon.setChromeCdpPort(config.chromeCdpPort);
 
   // Centralized usage poller — shared across this process and coordinates
   // with other cig-loop processes via the disk cache.

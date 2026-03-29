@@ -896,6 +896,16 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
   await footer.activate();
   footer.setThrottleConfig(config.throttle);
 
+  // Fire-and-forget initial usage scrape/fetch so the footer has data early
+  if (config.chromeCdpPort > 0) {
+    scrapeUsage(config.chromeCdpPort).then((usage) => {
+      if (usage) {
+        footer.setUsage(usage);
+        saveDiskCache(usage);
+      }
+    });
+  }
+
   // Hook live stats into daemon state
   if (daemon) {
     footer.onLiveStats = (stats) => daemon.setLive(stats);

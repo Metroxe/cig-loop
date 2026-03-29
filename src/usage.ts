@@ -68,35 +68,44 @@ const CACHE_TTL_MS = 90_000;
 
 /**
  * Fetch usage data from the Anthropic OAuth usage endpoint.
- * Returns cached data if fresh (within 60s), deduplicates concurrent calls.
+ * Returns cached data if fresh (within TTL), deduplicates concurrent calls.
  * Never throws — returns stale cached data or null on error.
+ *
+ * @param forceRefresh  Bypass TTL and fetch fresh data
+ * @param retries       Number of retries on 429 (default 0 = single attempt).
+ *                      Use retries > 0 only when Claude Code is NOT running
+ *                      (e.g. between iterations), since the endpoint is
+ *                      monopolized while Claude is active.
  */
-export async function fetchUsage(forceRefresh = false): Promise<UsageData | null> {
+export async function fetchUsage(forceRefresh = false, retries = 0): Promise<UsageData | null> {
   // Return cached data if still fresh
   if (!forceRefresh && cachedUsage && Date.now() - cachedUsage.fetchedAt < CACHE_TTL_MS) {
     return cachedUsage;
   }
 
-  // Deduplicate concurrent fetches
-  if (fetchInProgress) return fetchInProgress;
+  // Deduplicate concurrent fetches (only when retries match — don't let a
+  // quick fire-and-forget block a retry-capable call)
+  if (fetchInProgress && retries === 0) return fetchInProgress;
 
-  fetchInProgress = doFetch();
+  const p = doFetch(retries);
+  if (retries === 0) {
+    fetchInProgress = p;
+  }
   try {
-    return await fetchInProgress;
+    return await p;
   } finally {
-    fetchInProgress = null;
+    if (fetchInProgress === p) fetchInProgress = null;
   }
 }
 
-async function doFetch(): Promise<UsageData | null> {
+async function doFetch(maxRetries: number): Promise<UsageData | null> {
   const token = await readOAuthToken();
   if (!token) return null;
 
   // Retry with backoff on 429s — the usage endpoint is aggressively
   // rate-limited and shares quota with Claude Code itself (known issue:
   // anthropics/claude-code#31021, #31637, #30930).
-  const MAX_RETRIES = 3;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
         headers: {

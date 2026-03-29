@@ -1041,7 +1041,7 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
     // aggressively rate-limited while Claude Code is running — this is the
     // best window to get fresh data).
     {
-      const usage = await fetchUsage(true);
+      const usage = await fetchUsage(true, 3);
       if (usage) footer.setUsage(usage);
     }
 

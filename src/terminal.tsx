@@ -15,7 +15,7 @@ import { useState, useEffect, useSyncExternalStore } from "react";
 import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber, stripAnsi } from "./format.js";
 import { AnsiText } from "./ansi.js";
-import { fetchUsage, loadDiskCache, formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
+import { formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
 import type { CumulativeStats, LiveIterationStats, UsageData, ThrottleConfig } from "./types.js";
 
 const orange = chalk.hex("#FF9500");
@@ -37,7 +37,7 @@ interface StoreState {
   liveStats: LiveIterationStats | null;
   cumulative: CumulativeStats;
   usage: UsageData | null;
-  usageError: boolean;
+  usageFetchError: string | null;
   usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
   phase: "starting" | "running" | "throttled" | "paused" | "suspended" | "stopping" | "stopped" | null;
@@ -62,7 +62,7 @@ class TerminalStore {
         totalOutputTokens: 0,
       },
       usage: null,
-      usageError: false,
+      usageFetchError: null,
       usageLastAttempt: 0,
       throttleConfig: null,
       phase: null,
@@ -137,12 +137,12 @@ class TerminalStore {
 
   setUsage(usage: UsageData | null): void {
     this.state.usage = usage;
-    if (usage) this.state.usageError = false;
+    if (usage) this.state.usageFetchError = null;
     this.emit();
   }
 
-  setUsageError(): void {
-    this.state.usageError = true;
+  setUsageFetchError(error: string): void {
+    this.state.usageFetchError = error;
     this.state.usageLastAttempt = Date.now();
     this.emit();
   }
@@ -391,7 +391,7 @@ function Footer({
   liveStats,
   cumulative,
   usage,
-  usageError,
+  usageFetchError,
   usageLastAttempt,
   throttleConfig,
   phase,
@@ -401,13 +401,13 @@ function Footer({
   liveStats: LiveIterationStats | null;
   cumulative: CumulativeStats;
   usage: UsageData | null;
-  usageError: boolean;
+  usageFetchError: string | null;
   usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
   phase: StoreState["phase"];
   controlFocusIdx: number;
   onAction?: (action: ControlAction) => void;
-}) {
+}): any {
   const [now, setNow] = useState(Date.now());
   const { width: cols } = useTerminalDimensions();
 
@@ -475,6 +475,7 @@ function Footer({
             const ageMs = now - usage.fetchedAt;
             const ageSec = Math.round(ageMs / 1000);
             const ageLabel = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
+            const stale = ageMs > 5 * 60 * 1000;
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
@@ -508,18 +509,21 @@ function Footer({
                 {` (${usage.sevenDaySonnet ? formatResetTime(usage.sevenDaySonnet.resetsAt) : "?"})`}
               </span>
               <span attributes={TextAttributes.DIM}>{" | "}</span>
-              <span fg={ageMs > 5 * 60 * 1000 ? "#FF9500" : "#888888"}>{ageLabel}</span>
+              <span fg={stale ? "#FF9500" : "#888888"}>{ageLabel}</span>
+              {usageFetchError ? (
+                <span fg="#FF9500">{` ⚠ ${usageFetchError}`}</span>
+              ) : null}
             </text>
             );
           })() : (() => {
-            const POLL_INTERVAL = 120;
+            const POLL_INTERVAL = 300;
             const secSinceAttempt = usageLastAttempt > 0 ? Math.round((now - usageLastAttempt) / 1000) : 0;
             const nextCheckIn = Math.max(0, POLL_INTERVAL - secSinceAttempt);
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
-              {usageError ? (
-                <span fg="#FF9500">{`rate-limited | next check ${nextCheckIn}s`}</span>
+              {usageFetchError ? (
+                <span fg="#FF9500">{`${usageFetchError} | next check ${nextCheckIn}s`}</span>
               ) : (
                 <span attributes={TextAttributes.DIM}>{"loading..."}</span>
               )}
@@ -567,7 +571,7 @@ function App({ store, onAction }: { store: TerminalStore; onAction?: (action: Co
         liveStats={state.liveStats}
         cumulative={state.cumulative}
         usage={state.usage}
-        usageError={state.usageError}
+        usageFetchError={state.usageFetchError}
         usageLastAttempt={state.usageLastAttempt}
         throttleConfig={state.throttleConfig}
         phase={state.phase}
@@ -589,7 +593,6 @@ export class StickyFooter {
   private logFilePath: string | undefined;
   private maxLogLines: number;
   private logLineCount = 0;
-  private usagePollInterval: ReturnType<typeof setInterval> | null = null;
   private headless: boolean;
   private _onAction: ((action: ControlAction) => void) | null = null;
 
@@ -671,29 +674,11 @@ export class StickyFooter {
       }
     });
 
-    // Load disk-cached usage immediately so the footer has data on startup,
-    // then try a live fetch (fire-and-forget — will likely 429 while Claude
-    // Code is running, but updates the display if it succeeds).
-    loadDiskCache().then((usage) => {
-      if (usage) this.store.setUsage(usage);
-    });
-    fetchUsage().then((usage) => {
-      if (usage) this.store.setUsage(usage);
-      else if (!this.store.getSnapshot().usage) this.store.setUsageError();
-    });
-    this.usagePollInterval = setInterval(() => {
-      fetchUsage(true).then((usage) => {
-        if (usage) this.store.setUsage(usage);
-        else if (!this.store.getSnapshot().usage) this.store.setUsageError();
-      });
-    }, 120_000);
+    // Usage polling is handled externally by UsagePoller — it calls
+    // setUsage() and setUsageFetchError() on this footer instance.
   }
 
   deactivate(): void {
-    if (this.usagePollInterval) {
-      clearInterval(this.usagePollInterval);
-      this.usagePollInterval = null;
-    }
     if (this.headless) return;
 
     if (this.root) {
@@ -762,6 +747,10 @@ export class StickyFooter {
 
   setUsage(usage: UsageData | null): void {
     this.store.setUsage(usage);
+  }
+
+  setUsageFetchError(error: string): void {
+    this.store.setUsageFetchError(error);
   }
 
   setThrottleConfig(config: ThrottleConfig | null): void {

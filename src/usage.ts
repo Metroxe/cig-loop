@@ -6,6 +6,7 @@
  */
 
 import type { UsageBucket, UsageData, ThrottleConfig } from "./types.js";
+import { scrapeUsage } from "./usage-scraper.js";
 
 // ─── Disk Cache ─────────────────────────────────────────────────────────
 
@@ -301,6 +302,141 @@ function checkThrottleDynamic(
   }
 
   return null;
+}
+
+// ─── Centralized Poller ─────────────────────────────────────────────────
+
+const POLL_INTERVAL_MS = 5 * 60 * 1000;          // 5 minutes between fetches
+const DISK_CHECK_INTERVAL_MS = 15_000;            // check disk cache every 15s for cross-process updates
+const FRESHNESS_THRESHOLD_MS = POLL_INTERVAL_MS - 30_000; // skip fetch if disk data < 4.5 min old
+
+/**
+ * Centralized usage poller that coordinates across cig-loop processes via
+ * the shared disk cache.  Each process runs one UsagePoller; before every
+ * fetch it checks whether another process already wrote fresh data.
+ */
+export class UsagePoller {
+  private cdpPort: number;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private diskCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private _usage: UsageData | null = null;
+  private _lastError: string | null = null;
+  private _lastErrorAt = 0;
+  private _fetching = false;
+
+  /** Called whenever usage data changes (from fetch or cross-process update). */
+  onUsage: ((usage: UsageData) => void) | null = null;
+  /** Called whenever a fetch attempt fails. */
+  onError: ((error: string, at: number) => void) | null = null;
+
+  constructor(cdpPort = 0) {
+    this.cdpPort = cdpPort;
+  }
+
+  get usage(): UsageData | null { return this._usage; }
+  get lastError(): string | null { return this._lastError; }
+  get lastErrorAt(): number { return this._lastErrorAt; }
+
+  async start(): Promise<void> {
+    // Seed from disk cache so footer has data immediately
+    const diskData = await loadDiskCache();
+    if (diskData) {
+      this._usage = diskData;
+      this.onUsage?.(diskData);
+    }
+
+    // Initial fetch (fire-and-forget so it doesn't block startup)
+    this.poll();
+
+    this.pollTimer = setInterval(() => this.poll(), POLL_INTERVAL_MS);
+    this.diskCheckTimer = setInterval(() => this.checkDiskCache(), DISK_CHECK_INTERVAL_MS);
+  }
+
+  stop(): void {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.diskCheckTimer) { clearInterval(this.diskCheckTimer); this.diskCheckTimer = null; }
+  }
+
+  /** Force a fresh fetch — used by throttle checks that need up-to-date data. */
+  async refresh(): Promise<UsageData | null> {
+    return this.doFetchCycle(true);
+  }
+
+  private async poll(): Promise<void> {
+    await this.doFetchCycle(false);
+  }
+
+  /**
+   * Core fetch cycle.  When `force` is false, skips the network call if the
+   * disk cache was recently updated by another process.
+   */
+  private async doFetchCycle(force: boolean): Promise<UsageData | null> {
+    if (this._fetching) return this._usage;
+    this._fetching = true;
+
+    try {
+      // Check if another process already wrote fresh data
+      if (!force) {
+        const diskData = await loadDiskCache();
+        if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
+          this._usage = diskData;
+          this._lastError = null;
+          this.onUsage?.(diskData);
+        }
+        if (diskData && Date.now() - diskData.fetchedAt < FRESHNESS_THRESHOLD_MS) {
+          return this._usage;
+        }
+      }
+
+      let usage: UsageData | null = null;
+      let errorMsg: string | null = null;
+
+      // Try CDP if configured
+      if (this.cdpPort > 0) {
+        usage = await scrapeUsage(this.cdpPort);
+        if (!usage) errorMsg = "CDP scrape failed";
+      }
+
+      // Try API (as primary if no CDP, or as fallback if CDP failed)
+      if (!usage) {
+        const retries = this.cdpPort > 0 ? 0 : 3;
+        usage = await fetchUsage(true, retries);
+        if (!usage) {
+          errorMsg = this.cdpPort > 0
+            ? "CDP scrape + API fallback failed"
+            : "API fetch failed (rate-limited)";
+        }
+      }
+
+      if (usage) {
+        this._usage = usage;
+        this._lastError = null;
+        cachedUsage = usage;         // keep in-memory cache in sync
+        saveDiskCache(usage);        // share with other processes
+        this.onUsage?.(usage);
+      } else if (errorMsg) {
+        this._lastError = errorMsg;
+        this._lastErrorAt = Date.now();
+        this.onError?.(errorMsg, this._lastErrorAt);
+      }
+
+      return this._usage;
+    } finally {
+      this._fetching = false;
+    }
+  }
+
+  /** Check the disk cache for updates from other processes. */
+  private async checkDiskCache(): Promise<void> {
+    try {
+      const diskData = await loadDiskCache();
+      if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
+        this._usage = diskData;
+        this._lastError = null;
+        this.onUsage?.(diskData);
+      }
+    } catch { /* best-effort */ }
+  }
 }
 
 // ─── Display Helper ─────────────────────────────────────────────────────

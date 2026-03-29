@@ -18,8 +18,7 @@ import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import { VERSION, checkForUpdate } from "./version.js";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
-import { fetchUsage, checkThrottle, formatResetTime, saveDiskCache } from "./usage.js";
-import { scrapeUsage } from "./usage-scraper.js";
+import { checkThrottle, formatResetTime, UsagePoller } from "./usage.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -866,9 +865,13 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     totalOutputTokens: 0,
   };
 
+  // Poller reference — set after activate(), used by cleanup handlers.
+  let usagePoller: UsagePoller | null = null;
+
   // Ensure terminal is restored on any exit path (crash, uncaught exception, etc.)
   // This is a safety net — deactivate() is idempotent so double-calls are fine.
   const emergencyCleanup = () => {
+    usagePoller?.stop();
     footer.deactivate();
   };
   process.on("exit", emergencyCleanup);
@@ -877,6 +880,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   // In auto-attach mode, the attach TUI handles Ctrl+C via the socket API,
   // so this only fires for bare daemon processes killed externally.
   const cleanup = () => {
+    usagePoller?.stop();
     daemon.abortCurrentIteration();
     daemon.setStopReason("user interrupted (SIGINT)");
     daemon.setPhase("stopped");
@@ -892,6 +896,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
 
   // Handle uncaught errors
   const crashCleanup = (err: unknown) => {
+    usagePoller?.stop();
     daemon.abortCurrentIteration();
     footer.deactivate();
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -908,15 +913,12 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   footer.setThrottleConfig(config.throttle);
   daemon.setThrottleConfig(config.throttle);
 
-  // Fire-and-forget initial usage scrape/fetch so the footer has data early
-  if (config.chromeCdpPort > 0) {
-    scrapeUsage(config.chromeCdpPort).then((usage) => {
-      if (usage) {
-        footer.setUsage(usage);
-        saveDiskCache(usage);
-      }
-    });
-  }
+  // Centralized usage poller — shared across this process and coordinates
+  // with other cig-loop processes via the disk cache.
+  usagePoller = new UsagePoller(config.chromeCdpPort);
+  usagePoller.onUsage = (usage) => footer.setUsage(usage);
+  usagePoller.onError = (error) => footer.setUsageFetchError(error);
+  await usagePoller.start();
 
   // Hook live stats into daemon state
   footer.onLiveStats = (stats) => daemon.setLive(stats);
@@ -960,11 +962,10 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
       while (true) {
-        const usage = await fetchUsage(true);
+        const usage = await usagePoller.refresh();
         if (!usage) break; // can't check, proceed
         const hit = checkThrottle(usage, config.model, config.throttle);
         if (!hit) {
-          footer.setUsage(usage);
           daemon.setPhase("running");
           break; // under threshold
         }
@@ -972,7 +973,6 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
         footer.writeln(
           chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Checking in 60s...`)
         );
-        footer.setUsage(usage);
         await Bun.sleep(60_000);
       }
     }
@@ -1099,21 +1099,9 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
       }
     }
 
-    // Refresh usage now that Claude Code has exited (the usage endpoint is
-    // aggressively rate-limited while Claude Code is running — this is the
-    // best window to get fresh data). Fire-and-forget so it never blocks.
-    if (config.chromeCdpPort > 0) {
-      scrapeUsage(config.chromeCdpPort).then((usage) => {
-        if (usage) {
-          footer.setUsage(usage);
-          saveDiskCache(usage);
-        }
-      });
-    } else {
-      fetchUsage(true, 3).then((usage) => {
-        if (usage) footer.setUsage(usage);
-      });
-    }
+    // Refresh usage now that Claude Code has exited — best window to get
+    // fresh data since the API is less contended. Fire-and-forget.
+    usagePoller.refresh();
 
     // Trim log if over the line limit
     await footer.flushAndTrimLog();
@@ -1129,6 +1117,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     stopReason = "all iterations completed";
   }
 
+  usagePoller?.stop();
   footer.deactivate();
 
   process.removeListener("SIGINT", cleanup);

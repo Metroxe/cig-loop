@@ -1247,6 +1247,10 @@ async function main(): Promise<void> {
 
   if (isDaemon) {
     // Daemon mode: run the loop headless in this process
+    // Truncate log file before registering so the attach TUI doesn't
+    // load stale content from a previous run.
+    await Bun.write(config.logFile!, "");
+
     const daemon = new DaemonController(config);
     daemon.setLogFile(config.logFile!);
     await daemon.start();

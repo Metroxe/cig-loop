@@ -35,6 +35,7 @@ interface StoreState {
   liveStats: LiveIterationStats | null;
   cumulative: CumulativeStats;
   usage: UsageData | null;
+  usageError: boolean;
   throttleConfig: ThrottleConfig | null;
 }
 
@@ -56,6 +57,7 @@ class TerminalStore {
         totalOutputTokens: 0,
       },
       usage: null,
+      usageError: false,
       throttleConfig: null,
     };
   }
@@ -127,6 +129,12 @@ class TerminalStore {
 
   setUsage(usage: UsageData | null): void {
     this.state.usage = usage;
+    if (usage) this.state.usageError = false;
+    this.emit();
+  }
+
+  setUsageError(): void {
+    this.state.usageError = true;
     this.emit();
   }
 
@@ -307,11 +315,13 @@ function Footer({
   liveStats,
   cumulative,
   usage,
+  usageError,
   throttleConfig,
 }: {
   liveStats: LiveIterationStats | null;
   cumulative: CumulativeStats;
   usage: UsageData | null;
+  usageError: boolean;
   throttleConfig: ThrottleConfig | null;
 }) {
   const [now, setNow] = useState(Date.now());
@@ -378,6 +388,9 @@ function Footer({
             const cap5h = isDynamic && usage.fiveHour ? getDynamicThreshold(usage.fiveHour.resetsAt, BUCKET_PERIOD_MS.fiveHour) : null;
             const cap7d = isDynamic && usage.sevenDay ? getDynamicThreshold(usage.sevenDay.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
             const capModel = isDynamic && usage.sevenDaySonnet ? getDynamicThreshold(usage.sevenDaySonnet.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
+            const ageMs = now - usage.fetchedAt;
+            const isStale = ageMs > 5 * 60 * 1000; // >5 min old
+            const ageLabel = isStale ? ` [${Math.round(ageMs / 60_000)}m ago]` : "";
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
@@ -390,7 +403,7 @@ function Footer({
               <span attributes={TextAttributes.DIM}>
                 {` (${usage.fiveHour ? formatResetTime(usage.fiveHour.resetsAt) : "?"}) `}
               </span>
-              <span attributes={TextAttributes.DIM}>{"│ "}</span>
+              <span attributes={TextAttributes.DIM}>{"| "}</span>
               <span fg={usageColor(usage.sevenDay?.utilization ?? 0)}>
                 {`7d: ${usage.sevenDay?.utilization ?? "?"}%`}
               </span>
@@ -400,7 +413,7 @@ function Footer({
               <span attributes={TextAttributes.DIM}>
                 {` (${usage.sevenDay ? formatResetTime(usage.sevenDay.resetsAt) : "?"}) `}
               </span>
-              <span attributes={TextAttributes.DIM}>{"│ "}</span>
+              <span attributes={TextAttributes.DIM}>{"| "}</span>
               <span fg={usageColor(usage.sevenDaySonnet?.utilization ?? 0)}>
                 {`sonnet: ${usage.sevenDaySonnet?.utilization ?? "?"}%`}
               </span>
@@ -410,11 +423,19 @@ function Footer({
               <span attributes={TextAttributes.DIM}>
                 {` (${usage.sevenDaySonnet ? formatResetTime(usage.sevenDaySonnet.resetsAt) : "?"})`}
               </span>
+              {isStale ? (
+                <span fg="#FF9500">{ageLabel}</span>
+              ) : null}
             </text>
             );
           })() : (
             <text>
-              <span attributes={TextAttributes.DIM}>{" Usage: https://claude.ai/settings/usage"}</span>
+              <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
+              {usageError ? (
+                <span fg="#FF9500">{"rate-limited (will retry after iteration)"}</span>
+              ) : (
+                <span attributes={TextAttributes.DIM}>{"loading..."}</span>
+              )}
             </text>
           )}
         </box>
@@ -453,7 +474,7 @@ function App({ store }: { store: TerminalStore }) {
           </text>
         ) : null}
       </scrollbox>
-      <Footer liveStats={state.liveStats} cumulative={state.cumulative} usage={state.usage} throttleConfig={state.throttleConfig} />
+      <Footer liveStats={state.liveStats} cumulative={state.cumulative} usage={state.usage} usageError={state.usageError} throttleConfig={state.throttleConfig} />
     </box>
   );
 }
@@ -513,6 +534,7 @@ export class StickyFooter {
     });
     fetchUsage().then((usage) => {
       if (usage) this.store.setUsage(usage);
+      else if (!this.store.getSnapshot().usage) this.store.setUsageError();
     });
     this.usagePollInterval = setInterval(() => {
       fetchUsage(true).then((usage) => {

@@ -513,7 +513,7 @@ export class StickyFooter {
       fetchUsage(true).then((usage) => {
         if (usage) this.store.setUsage(usage);
       });
-    }, 60_000);
+    }, 120_000);
   }
 
   deactivate(): void {

@@ -920,9 +920,10 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
       daemon.setIteration(i);
     }
 
-    // Always refresh usage at iteration start so the footer stays up-to-date
+    // Ensure usage is displayed (uses cache from post-iteration fetch, or
+    // attempts a fresh fetch on the first iteration / if cache is stale)
     {
-      const usage = await fetchUsage(i > 1);
+      const usage = await fetchUsage(false);
       if (usage) footer.setUsage(usage);
     }
 
@@ -1034,6 +1035,14 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
         footer.writeln(chalk.red(`  ${stopReason} - stopping loop`));
         break;
       }
+    }
+
+    // Refresh usage now that Claude Code has exited (the usage endpoint is
+    // aggressively rate-limited while Claude Code is running — this is the
+    // best window to get fresh data).
+    {
+      const usage = await fetchUsage(true);
+      if (usage) footer.setUsage(usage);
     }
 
     // Trim log if over the line limit

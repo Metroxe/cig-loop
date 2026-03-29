@@ -7,6 +7,35 @@
 
 import type { UsageBucket, UsageData, ThrottleConfig } from "./types.js";
 
+// ─── Disk Cache ─────────────────────────────────────────────────────────
+
+const DISK_CACHE_PATH = `${process.env.HOME || "~"}/.cache/cig-loop/usage.json`;
+
+async function loadDiskCache(): Promise<UsageData | null> {
+  try {
+    const file = Bun.file(DISK_CACHE_PATH);
+    if (!(await file.exists())) return null;
+    const data = await file.json();
+    if (data && typeof data.fetchedAt === "number") return data as UsageData;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveDiskCache(usage: UsageData): Promise<void> {
+  try {
+    await Bun.write(DISK_CACHE_PATH, JSON.stringify(usage));
+  } catch {
+    // best-effort — directory may not exist yet
+    try {
+      const dir = DISK_CACHE_PATH.slice(0, DISK_CACHE_PATH.lastIndexOf("/"));
+      await Bun.$`mkdir -p ${dir}`.quiet();
+      await Bun.write(DISK_CACHE_PATH, JSON.stringify(usage));
+    } catch { /* ignore */ }
+  }
+}
+
 // ─── Credential Reading ─────────────────────────────────────────────────
 
 let cachedToken: string | null | undefined; // undefined = not yet read
@@ -35,7 +64,7 @@ async function readOAuthToken(): Promise<string | null> {
 
 let cachedUsage: UsageData | null = null;
 let fetchInProgress: Promise<UsageData | null> | null = null;
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 90_000;
 
 /**
  * Fetch usage data from the Anthropic OAuth usage endpoint.
@@ -63,26 +92,52 @@ async function doFetch(): Promise<UsageData | null> {
   const token = await readOAuthToken();
   if (!token) return null;
 
-  try {
-    const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "anthropic-beta": "oauth-2025-04-20",
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
+  // Retry with backoff on 429s — the usage endpoint is aggressively
+  // rate-limited and shares quota with Claude Code itself (known issue:
+  // anthropics/claude-code#31021, #31637, #30930).
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "anthropic-beta": "oauth-2025-04-20",
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
 
-    if (!response.ok) {
-      return cachedUsage; // return stale data
+      if (response.status === 429) {
+        if (attempt < MAX_RETRIES) {
+          const retryAfter = parseInt(response.headers.get("retry-after") || "0", 10);
+          const backoffMs = Math.max(retryAfter * 1000, 3_000) * Math.pow(2, attempt);
+          await Bun.sleep(backoffMs);
+          continue;
+        }
+        // Exhausted retries — fall through to disk/memory cache
+        break;
+      }
+
+      if (!response.ok) {
+        break; // fall through to cache
+      }
+
+      const data = await response.json();
+      const usage = parseUsageResponse(data);
+      cachedUsage = usage;
+      saveDiskCache(usage); // fire-and-forget
+      return usage;
+    } catch {
+      break; // fall through to cache
     }
-
-    const data = await response.json();
-    const usage = parseUsageResponse(data);
-    cachedUsage = usage;
-    return usage;
-  } catch {
-    return cachedUsage; // return stale data on network error
   }
+
+  // API unavailable — return in-memory cache, or fall back to disk cache
+  if (cachedUsage) return cachedUsage;
+  const diskCached = await loadDiskCache();
+  if (diskCached) {
+    cachedUsage = diskCached;
+  }
+  return cachedUsage;
 }
 
 function parseBucket(raw: unknown): UsageBucket | null {

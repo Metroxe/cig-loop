@@ -28,6 +28,8 @@ interface LineItem {
   style?: "orange";
 }
 
+export type ControlAction = "pause" | "force-stop" | "skip" | "force-quit" | "background" | "continue";
+
 interface StoreState {
   lines: LineItem[];
   currentLine: string;
@@ -38,6 +40,8 @@ interface StoreState {
   usageError: boolean;
   usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
+  phase: "starting" | "running" | "throttled" | "paused" | "suspended" | "stopping" | "stopped" | null;
+  controlFocusIdx: number;
 }
 
 class TerminalStore {
@@ -61,6 +65,8 @@ class TerminalStore {
       usageError: false,
       usageLastAttempt: 0,
       throttleConfig: null,
+      phase: null,
+      controlFocusIdx: 0,
     };
   }
 
@@ -143,6 +149,16 @@ class TerminalStore {
 
   setThrottleConfig(config: ThrottleConfig | null): void {
     this.state.throttleConfig = config;
+    this.emit();
+  }
+
+  setPhase(phase: StoreState["phase"]): void {
+    this.state.phase = phase;
+    this.emit();
+  }
+
+  setControlFocusIdx(idx: number): void {
+    this.state.controlFocusIdx = idx;
     this.emit();
   }
 
@@ -306,6 +322,63 @@ function SmokingCigarette() {
   );
 }
 
+// ─── Control Bar ─────────────────────────────────────────────────────
+
+interface ControlButton {
+  key: string;
+  label: string;
+  action: ControlAction;
+}
+
+const NORMAL_BUTTONS: ControlButton[] = [
+  { key: "P", label: "Pause", action: "pause" },
+  { key: "S", label: "Stop", action: "force-stop" },
+  { key: "N", label: "Next", action: "skip" },
+  { key: "Q", label: "Quit", action: "force-quit" },
+  { key: "B", label: "Background", action: "background" },
+];
+
+const PAUSED_BUTTONS: ControlButton[] = [
+  { key: "P", label: "Unpause", action: "pause" },
+  { key: "S", label: "Stop", action: "force-stop" },
+  { key: "N", label: "Next", action: "skip" },
+  { key: "Q", label: "Quit", action: "force-quit" },
+  { key: "B", label: "Background", action: "background" },
+];
+
+const SUSPENDED_BUTTONS: ControlButton[] = [
+  { key: "C", label: "Continue", action: "continue" },
+  { key: "Q", label: "Quit", action: "force-quit" },
+  { key: "B", label: "Background", action: "background" },
+];
+
+function ControlBar({ phase, focusIdx, onAction }: {
+  phase: StoreState["phase"];
+  focusIdx: number;
+  onAction?: (action: ControlAction) => void;
+}) {
+  const buttons = phase === "suspended" ? SUSPENDED_BUTTONS
+    : phase === "paused" ? PAUSED_BUTTONS
+    : NORMAL_BUTTONS;
+
+  return (
+    <box flexDirection="row">
+      <text><span>{" "}</span></text>
+      {buttons.map((btn, i) => {
+        const focused = i === focusIdx;
+        return (
+          <text key={btn.key}>
+            <span fg={focused ? "#000000" : "#888888"} bg={focused ? "#5FAFAF" : undefined} attributes={focused ? TextAttributes.BOLD : TextAttributes.DIM}>
+              {` [${btn.key}] ${btn.label} `}
+            </span>
+            <span>{" "}</span>
+          </text>
+        );
+      })}
+    </box>
+  );
+}
+
 // ─── Footer Component ─────────────────────────────────────────────────
 
 function usageColor(pct: number): string {
@@ -321,6 +394,9 @@ function Footer({
   usageError,
   usageLastAttempt,
   throttleConfig,
+  phase,
+  controlFocusIdx,
+  onAction,
 }: {
   liveStats: LiveIterationStats | null;
   cumulative: CumulativeStats;
@@ -328,6 +404,9 @@ function Footer({
   usageError: boolean;
   usageLastAttempt: number;
   throttleConfig: ThrottleConfig | null;
+  phase: StoreState["phase"];
+  controlFocusIdx: number;
+  onAction?: (action: ControlAction) => void;
 }) {
   const [now, setNow] = useState(Date.now());
   const { width: cols } = useTerminalDimensions();
@@ -451,13 +530,14 @@ function Footer({
         {!isWide && <text><span>{" "}</span></text>}
         <SmokingCigarette />
       </box>
+      {phase && <ControlBar phase={phase} focusIdx={controlFocusIdx} onAction={onAction} />}
     </box>
   );
 }
 
 // ─── App Component ────────────────────────────────────────────────────
 
-function App({ store }: { store: TerminalStore }) {
+function App({ store, onAction }: { store: TerminalStore; onAction?: (action: ControlAction) => void }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const { width, height } = useTerminalDimensions();
 
@@ -483,7 +563,17 @@ function App({ store }: { store: TerminalStore }) {
           </text>
         ) : null}
       </scrollbox>
-      <Footer liveStats={state.liveStats} cumulative={state.cumulative} usage={state.usage} usageError={state.usageError} usageLastAttempt={state.usageLastAttempt} throttleConfig={state.throttleConfig} />
+      <Footer
+        liveStats={state.liveStats}
+        cumulative={state.cumulative}
+        usage={state.usage}
+        usageError={state.usageError}
+        usageLastAttempt={state.usageLastAttempt}
+        throttleConfig={state.throttleConfig}
+        phase={state.phase}
+        controlFocusIdx={state.controlFocusIdx}
+        onAction={onAction}
+      />
     </box>
   );
 }
@@ -501,6 +591,7 @@ export class StickyFooter {
   private logLineCount = 0;
   private usagePollInterval: ReturnType<typeof setInterval> | null = null;
   private headless: boolean;
+  private _onAction: ((action: ControlAction) => void) | null = null;
 
   constructor(logFilePath?: string, maxLogLines = 0, headless = false) {
     this.logFilePath = logFilePath;
@@ -509,6 +600,11 @@ export class StickyFooter {
     if (logFilePath) {
       this.logWriter = Bun.file(logFilePath).writer();
     }
+  }
+
+  /** Set a callback for control bar actions (pause, skip, force-stop, etc.) */
+  set onAction(handler: ((action: ControlAction) => void) | null) {
+    this._onAction = handler;
   }
 
   async activate(): Promise<void> {
@@ -524,14 +620,54 @@ export class StickyFooter {
       autoFocus: false,
     });
     this.root = createRoot(this.renderer);
-    this.root.render(<App store={this.store} />);
+
+    const dispatchAction = (action: ControlAction) => {
+      this._onAction?.(action);
+    };
+    this.root.render(<App store={this.store} onAction={dispatchAction} />);
 
     // In raw mode, Ctrl+C doesn't generate SIGINT — it arrives as byte 0x03
     // on stdin. OpenTUI parses it as a keypress but with exitOnCtrlC:false it's
-    // silently dropped. Re-raise SIGINT so process-level signal handlers work.
+    // silently dropped.
     this.renderer.keyInput.on("keypress", (event) => {
       if (event.name === "c" && event.ctrl) {
-        process.kill(process.pid, "SIGINT");
+        // If a control action handler is set, Ctrl+C triggers force-quit
+        // through the control bar. Otherwise, re-raise SIGINT for legacy mode.
+        if (this._onAction) {
+          this._onAction("force-quit");
+        } else {
+          process.kill(process.pid, "SIGINT");
+        }
+        return;
+      }
+
+      // Control bar hotkeys
+      const phase = this.store.getSnapshot().phase;
+      if (!phase) return;
+
+      const buttons = phase === "suspended" ? SUSPENDED_BUTTONS
+        : phase === "paused" ? PAUSED_BUTTONS
+        : NORMAL_BUTTONS;
+
+      const key = event.name?.toLowerCase();
+
+      // Hotkey match
+      for (const btn of buttons) {
+        if (key === btn.key.toLowerCase()) {
+          dispatchAction(btn.action);
+          return;
+        }
+      }
+
+      // Arrow key navigation
+      const currentIdx = this.store.getSnapshot().controlFocusIdx;
+      if (key === "left" || key === "h") {
+        this.store.setControlFocusIdx(Math.max(0, currentIdx - 1));
+      } else if (key === "right" || key === "l") {
+        this.store.setControlFocusIdx(Math.min(buttons.length - 1, currentIdx + 1));
+      } else if (key === "return") {
+        const focused = buttons[currentIdx];
+        if (focused) dispatchAction(focused.action);
       }
     });
 
@@ -630,6 +766,10 @@ export class StickyFooter {
 
   setThrottleConfig(config: ThrottleConfig | null): void {
     this.store.setThrottleConfig(config);
+  }
+
+  setPhase(phase: StoreState["phase"]): void {
+    this.store.setPhase(phase);
   }
 
   getCumulative(): CumulativeStats {

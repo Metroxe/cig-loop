@@ -6,7 +6,7 @@
  */
 
 import { mkdir, readdir, rm } from "node:fs/promises";
-import type { CumulativeStats, LiveIterationStats, LoopConfig } from "./types.js";
+import type { CumulativeStats, LiveIterationStats, LoopConfig, ThrottleConfig } from "./types.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
@@ -20,12 +20,14 @@ export interface DaemonState {
   startedAt: string;
   cwd: string;
   promptPath: string;
-  phase: "starting" | "running" | "throttled" | "paused" | "stopping" | "stopped";
+  phase: "starting" | "running" | "throttled" | "paused" | "suspended" | "stopping" | "stopped";
   iteration: number;
   totalIterations: number;
   cumulative: CumulativeStats;
   live: LiveIterationStats | null;
   stopReason?: string;
+  logFile?: string;
+  throttleConfig?: ThrottleConfig | null;
 }
 
 // ─── ID Generation ──────────────────────────────────────────────────────
@@ -48,6 +50,10 @@ export class DaemonController {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private _pauseRequested = false;
   private _stopRequested = false;
+  private _skipRequested = false;
+  private _forceStopRequested = false;
+  private _forceQuitRequested = false;
+  private _iterationAbort: AbortController = new AbortController();
 
   private state: DaemonState;
 
@@ -84,6 +90,35 @@ export class DaemonController {
     return this._stopRequested;
   }
 
+  get isSkipRequested(): boolean {
+    return this._skipRequested;
+  }
+
+  get isForceStopRequested(): boolean {
+    return this._forceStopRequested;
+  }
+
+  get isForceQuitRequested(): boolean {
+    return this._forceQuitRequested;
+  }
+
+  /** Get the AbortSignal for the current iteration. */
+  get iterationSignal(): AbortSignal {
+    return this._iterationAbort.signal;
+  }
+
+  /** Reset the abort controller for a new iteration. Clears skip flag. */
+  resetIterationAbort(): void {
+    this._iterationAbort = new AbortController();
+    this._skipRequested = false;
+    this._forceStopRequested = false;
+  }
+
+  /** Abort the current iteration's Claude subprocess. */
+  abortCurrentIteration(): void {
+    this._iterationAbort.abort();
+  }
+
   async start(): Promise<void> {
     await mkdir(this.runDir, { recursive: true });
 
@@ -108,7 +143,7 @@ export class DaemonController {
     await this.persistState();
   }
 
-  private handleRequest(req: Request): Response {
+  private async handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -136,6 +171,36 @@ export class DaemonController {
       return Response.json({ ok: true });
     }
 
+    if (req.method === "POST" && path === "/skip") {
+      this._skipRequested = true;
+      this.abortCurrentIteration();
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/force-stop") {
+      this._forceStopRequested = true;
+      this.abortCurrentIteration();
+      this.state.phase = "suspended";
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/force-quit") {
+      this._forceQuitRequested = true;
+      this._stopRequested = true;
+      this.abortCurrentIteration();
+      this.state.phase = "stopping";
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/continue") {
+      this._forceStopRequested = false;
+      this._pauseRequested = false;
+      if (this.state.phase === "suspended" || this.state.phase === "paused") {
+        this.state.phase = "running";
+      }
+      return Response.json({ ok: true });
+    }
+
     if (req.method === "GET" && path === "/log") {
       const lines = parseInt(url.searchParams.get("lines") || "50", 10);
       return this.getLogTail(lines);
@@ -148,6 +213,11 @@ export class DaemonController {
 
   setLogFile(path: string): void {
     this.logFilePath_ = path;
+    this.state.logFile = path;
+  }
+
+  setThrottleConfig(config: ThrottleConfig | null): void {
+    this.state.throttleConfig = config;
   }
 
   private async getLogTail(lines: number): Promise<Response> {
@@ -184,9 +254,8 @@ export class DaemonController {
     this.state.stopReason = reason;
   }
 
-  async persistState(logFile?: string): Promise<void> {
-    const data = { ...this.state, logFile };
-    await Bun.write(`${this.runDir}/state.json`, JSON.stringify(data, null, 2));
+  async persistState(): Promise<void> {
+    await Bun.write(`${this.runDir}/state.json`, JSON.stringify(this.state, null, 2));
   }
 
   async shutdown(): Promise<void> {
@@ -288,7 +357,7 @@ export async function findRun(idPrefix?: string): Promise<RunInfo> {
   }
 
   if (!idPrefix) {
-    if (runs.length === 1) return runs[0];
+    if (runs.length === 1) return runs[0]!;
     throw new Error(
       `Multiple daemons running. Specify an ID:\n${runs.map((r) => `  ${r.id}  ${r.promptPath}  (${r.phase})`).join("\n")}`
     );
@@ -304,7 +373,7 @@ export async function findRun(idPrefix?: string): Promise<RunInfo> {
     );
   }
 
-  return matches[0];
+  return matches[0]!;
 }
 
 /**

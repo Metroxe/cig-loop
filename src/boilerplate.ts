@@ -28,7 +28,7 @@ async function fetchBoilerplateList(): Promise<string[]> {
   if (!res.ok) {
     throw new Error(`Failed to fetch boilerplates: ${res.status} ${res.statusText}`);
   }
-  const entries: GitHubEntry[] = await res.json();
+  const entries = (await res.json()) as GitHubEntry[];
   return entries.filter((e) => e.type === "dir").map((e) => e.name);
 }
 
@@ -43,7 +43,7 @@ async function fetchBoilerplateFiles(
     if (!res.ok) {
       throw new Error(`Failed to fetch ${apiPath}: ${res.status} ${res.statusText}`);
     }
-    const entries: GitHubEntry[] = await res.json();
+    const entries = (await res.json()) as GitHubEntry[];
 
     for (const entry of entries) {
       if (entry.type === "file" && entry.download_url) {

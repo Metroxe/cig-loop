@@ -116,7 +116,7 @@ async function doFetch(maxRetries: number): Promise<UsageData | null> {
       });
 
       if (response.status === 429) {
-        if (attempt < MAX_RETRIES) {
+        if (attempt < maxRetries) {
           const retryAfter = parseInt(response.headers.get("retry-after") || "0", 10);
           const backoffMs = Math.max(retryAfter * 1000, 3_000) * Math.pow(2, attempt);
           await Bun.sleep(backoffMs);

@@ -35,9 +35,15 @@ if (process.argv[2] === "update") {
   process.exit(0);
 }
 
-if (["list", "status", "stop", "logs", "pause", "resume"].includes(process.argv[2] || "")) {
+if (["list", "status", "stop", "logs", "pause", "resume", "attach"].includes(process.argv[2] || "")) {
   const { runClientCommand } = await import("./daemon-cli.js");
   await runClientCommand(process.argv[2] as string, process.argv[3]);
+  process.exit(0);
+}
+
+if (process.argv[2] === "sessions") {
+  const { runSessionBrowser } = await import("./sessions.js");
+  await runSessionBrowser();
   process.exit(0);
 }
 
@@ -681,6 +687,7 @@ async function gatherConfig(): Promise<LoopConfig> {
     delaySeconds: parseFloat(core.delaySeconds as string) || 0,
     timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle,
+    chromeCdpPort: parseInt(opts.chromeCdp, 10) || 0,
   };
 }
 
@@ -848,8 +855,9 @@ async function ensureLogFileInGitignore(logFile: string): Promise<void> {
 
 // ─── Cig Loop ──────────────────────────────────────────────────────────
 
-async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<void> {
-  const footer = new StickyFooter(config.logFile, config.maxLogLines, !!daemon);
+async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<void> {
+  // TUI always runs in the attach layer; the loop itself is headless (log-only)
+  const footer = new StickyFooter(config.logFile, config.maxLogLines, true);
   const cumulative: CumulativeStats = {
     completedIterations: 0,
     totalDurationMs: 0,
@@ -865,29 +873,32 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
   };
   process.on("exit", emergencyCleanup);
 
-  // AbortController to kill the active Claude subprocess on cleanup
-  const abortController = new AbortController();
-
-  // Handle Ctrl+C gracefully
+  // Handle Ctrl+C — triggers force-quit via daemon signals.
+  // In auto-attach mode, the attach TUI handles Ctrl+C via the socket API,
+  // so this only fires for bare daemon processes killed externally.
   const cleanup = () => {
-    abortController.abort();
+    daemon.abortCurrentIteration();
+    daemon.setStopReason("user interrupted (SIGINT)");
+    daemon.setPhase("stopped");
+    daemon.persistState();
     footer.deactivate();
-    printFinalSummary(cumulative, config, "user interrupted (Ctrl+C)");
     footer.closeLog();
-    daemon?.shutdown();
-    process.exit(0);
+    daemon.shutdown();
+    // Don't process.exit — let the attach layer detect "stopped" and exit cleanly.
+    // For bare --daemon mode (no attach), the loop will break on isForceQuitRequested.
   };
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  // Handle uncaught errors — restore terminal before crashing
+  // Handle uncaught errors
   const crashCleanup = (err: unknown) => {
-    abortController.abort();
+    daemon.abortCurrentIteration();
     footer.deactivate();
     const errMsg = err instanceof Error ? err.message : String(err);
-    printFinalSummary(cumulative, config, `fatal error: ${errMsg}`);
+    daemon.setStopReason(`fatal error: ${errMsg}`);
+    daemon.setPhase("stopped");
     footer.closeLog();
-    daemon?.shutdown();
+    daemon.shutdown();
     process.exit(1);
   };
   process.on("uncaughtException", crashCleanup);
@@ -895,6 +906,7 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
 
   await footer.activate();
   footer.setThrottleConfig(config.throttle);
+  daemon.setThrottleConfig(config.throttle);
 
   // Fire-and-forget initial usage scrape/fetch so the footer has data early
   if (config.chromeCdpPort > 0) {
@@ -907,32 +919,42 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
   }
 
   // Hook live stats into daemon state
-  if (daemon) {
-    footer.onLiveStats = (stats) => daemon.setLive(stats);
-  }
+  footer.onLiveStats = (stats) => daemon.setLive(stats);
 
   const maxIterations = config.iterations === 0 ? Infinity : config.iterations;
   let stopReason: string | undefined;
 
   for (let i = 1; i <= maxIterations; i++) {
-    // Daemon: check for stop/pause signals
-    if (daemon) {
-      if (daemon.isStopRequested) {
-        stopReason = "stopped via daemon control";
-        break;
-      }
-      while (daemon.isPauseRequested) {
-        daemon.setPhase("paused");
-        await Bun.sleep(1000);
-        if (daemon.isStopRequested) break;
-      }
-      if (daemon.isStopRequested) {
-        stopReason = "stopped via daemon control";
-        break;
-      }
-      daemon.setPhase("running");
-      daemon.setIteration(i);
+    // Check for stop/pause/force-quit signals
+    if (daemon.isForceQuitRequested || daemon.isStopRequested) {
+      stopReason = "stopped via control";
+      break;
     }
+    while (daemon.isPauseRequested) {
+      daemon.setPhase("paused");
+      await Bun.sleep(1000);
+      if (daemon.isStopRequested || daemon.isForceQuitRequested) break;
+    }
+    if (daemon.isStopRequested || daemon.isForceQuitRequested) {
+      stopReason = "stopped via control";
+      break;
+    }
+
+    // Handle suspended state (force-stop was pressed — wait for continue or quit)
+    while (daemon.isForceStopRequested) {
+      daemon.setPhase("suspended");
+      await daemon.persistState();
+      await Bun.sleep(1000);
+      if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
+    }
+    if (daemon.isForceQuitRequested || daemon.isStopRequested) {
+      stopReason = "stopped via control";
+      break;
+    }
+
+    daemon.setPhase("running");
+    daemon.setIteration(i);
+    daemon.resetIterationAbort();
 
     // Throttle check: pause if any usage bucket exceeds its threshold
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
@@ -943,10 +965,10 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
         const hit = checkThrottle(usage, config.model, config.throttle);
         if (!hit) {
           footer.setUsage(usage);
-          if (daemon) daemon.setPhase("running");
+          daemon.setPhase("running");
           break; // under threshold
         }
-        if (daemon) daemon.setPhase("throttled");
+        daemon.setPhase("throttled");
         footer.writeln(
           chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Checking in 60s...`)
         );
@@ -966,14 +988,49 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
     footer.writeln(chalk.bold.hex("#5FAFAF")(`  ${iterLabel}`));
     footer.writeln("");
 
-    // Run Claude
+    // Run Claude using daemon's iteration-scoped abort signal
     let result: IterationResult;
     try {
-      result = await runClaudeIteration(config, i, footer, abortController.signal);
+      result = await runClaudeIteration(config, i, footer, daemon.iterationSignal);
     } catch (err) {
+      // Check if this was a skip/force-stop/force-quit abort
+      if (daemon.isSkipRequested) {
+        footer.writeln(chalk.yellow(`  ⏭ Iteration ${i} skipped`));
+        daemon.setLive(null);
+        continue;
+      }
+      if (daemon.isForceStopRequested) {
+        footer.writeln(chalk.yellow(`  ⏸ Force stopped during iteration ${i}`));
+        daemon.setLive(null);
+        i--; // Re-run this iteration after continue
+        continue;
+      }
+      if (daemon.isForceQuitRequested || daemon.isStopRequested) {
+        stopReason = "stopped via control";
+        break;
+      }
       const errMsg = err instanceof Error ? err.message : String(err);
       footer.writeln(chalk.red(`\nFatal error in iteration ${i}: ${errMsg}`));
       stopReason = `fatal error on iteration ${i}: ${errMsg}`;
+      break;
+    }
+
+    // Check if the iteration was aborted by a daemon control signal
+    // (not a real crash — the subprocess was killed intentionally)
+    if (daemon.isSkipRequested) {
+      footer.writeln(chalk.yellow(`  ⏭ Iteration ${i} skipped`));
+      daemon.setLive(null);
+      continue;
+    }
+    if (daemon.isForceStopRequested) {
+      footer.writeln(chalk.yellow(`  ⏸ Force stopped during iteration ${i}`));
+      daemon.setLive(null);
+      // Don't increment i — re-run this iteration after continue
+      i--;
+      continue;
+    }
+    if (daemon.isForceQuitRequested || daemon.isStopRequested) {
+      stopReason = "stopped via control";
       break;
     }
 
@@ -984,10 +1041,8 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
     cumulative.totalInputTokens += result.tokenUsage?.inputTokens || 0;
     cumulative.totalOutputTokens += result.tokenUsage?.outputTokens || 0;
     footer.setCumulative(cumulative);
-    if (daemon) {
-      daemon.setCumulative(cumulative);
-      daemon.setLive(null);
-    }
+    daemon.setCumulative(cumulative);
+    daemon.setLive(null);
 
     // Print iteration summary in scroll area
     footer.writeln("");
@@ -1083,13 +1138,14 @@ async function runLoop(config: LoopConfig, daemon?: DaemonController): Promise<v
   process.removeListener("unhandledRejection", crashCleanup);
 
   const finalReason = stopReason || "loop finished";
-  if (daemon) {
-    daemon.setStopReason(finalReason);
-  }
-  printFinalSummary(cumulative, config, finalReason);
+  daemon.setStopReason(finalReason);
+  daemon.setPhase("stopped");
+  await daemon.persistState();
 
+  // Don't print summary here — the attached TUI will detect "stopped" phase
+  // and handle display. Just clean up.
   await footer.closeLog();
-  await daemon?.shutdown();
+  await daemon.shutdown();
 }
 
 // ─── Final Summary ─────────────────────────────────────────────────────
@@ -1135,14 +1191,15 @@ async function main(): Promise<void> {
   // Validate
   await validateConfig(config);
 
-  // Daemon mode: auto-enable log file if not set
   const isDaemon = opts.daemon === true;
-  if (isDaemon && !config.logFile) {
+
+  // Always ensure a log file exists (needed for daemon-first architecture)
+  if (!config.logFile) {
     config.logFile = `cig-loop-${Date.now()}.log`;
   }
 
   // Ensure log file is gitignored
-  if (config.logFile) await ensureLogFileInGitignore(config.logFile);
+  await ensureLogFileInGitignore(config.logFile);
 
   // Show version
   console.log(chalk.bold(`cig-loop v${VERSION}`));
@@ -1196,27 +1253,107 @@ async function main(): Promise<void> {
   }
   if (config.enableIde) console.log(`  IDE:        enabled`);
   if (config.enableChrome) console.log(`  Chrome:     enabled`);
-  if (isDaemon) console.log(`  Mode:       ${chalk.cyan("daemon")}`);
+  if (isDaemon) console.log(`  Mode:       ${chalk.cyan("daemon (background)")}`);
   console.log("");
 
-  // Start daemon controller if in daemon mode
-  let daemon: DaemonController | undefined;
   if (isDaemon) {
-    daemon = new DaemonController(config);
-    if (config.logFile) daemon.setLogFile(config.logFile);
+    // Daemon mode: run the loop headless in this process
+    const daemon = new DaemonController(config);
+    daemon.setLogFile(config.logFile!);
     await daemon.start();
-    await daemon.persistState(config.logFile);
-    console.log(chalk.cyan(`  Daemon ID:  ${daemon.id}`));
-    console.log(chalk.cyan(`  Socket:     ${daemon.socketPath}`));
+    await daemon.persistState();
+
+    console.log(chalk.cyan(`  Session:    ${daemon.id}`));
     console.log(chalk.cyan(`  Log:        ${config.logFile}`));
     console.log("");
-    console.log(chalk.dim("  Use 'cig-loop status' to check progress"));
-    console.log(chalk.dim("  Use 'cig-loop stop' to stop the daemon"));
+    console.log(chalk.dim("  Use 'cig-loop sessions' to attach"));
+    console.log(chalk.dim("  Use 'cig-loop stop' to stop"));
     console.log("");
+    await runLoop(config, daemon);
+  } else {
+    // Foreground mode: spawn a detached daemon child, then attach the TUI.
+    // The child process runs the loop headless; the parent process is just
+    // the TUI. When the user presses [B]ackground, the parent exits and the
+    // child continues running.
+    const child = spawnDaemonChild(config);
+
+    // Wait for the daemon to register (state.json + socket)
+    let daemonId: string | undefined;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await Bun.sleep(250);
+      const { listRuns } = await import("./daemon.js");
+      const runs = await listRuns();
+      // Find the run owned by our child PID
+      const match = runs.find((r) => r.pid === child.pid);
+      if (match) {
+        daemonId = match.id;
+        break;
+      }
+    }
+
+    if (!daemonId) {
+      console.error(chalk.red("Failed to start daemon — child process did not register within 10s."));
+      process.exit(1);
+    }
+
+    console.log(chalk.cyan(`  Session:    ${daemonId}`));
+    console.log(chalk.cyan(`  Log:        ${config.logFile}`));
+    console.log("");
+
+    // Detach parent from child — child survives parent exit
+    child.unref();
+
+    // Auto-attach the TUI
+    const { cmdAttach } = await import("./daemon-cli.js");
+    await cmdAttach(daemonId);
+  }
+}
+
+/**
+ * Spawn a detached child process running the loop in daemon mode.
+ * Returns the child process handle.
+ */
+function spawnDaemonChild(config: LoopConfig) {
+  const args: string[] = [];
+
+  args.push("-p", config.promptPath);
+  args.push("-i", String(config.iterations));
+  args.push("--daemon");
+  args.push("--no-interactive");
+
+  if (config.model) args.push("-m", config.model);
+  if (config.stopString) args.push("--stop-string", config.stopString);
+  if (config.continueString) args.push("--continue-string", config.continueString);
+  if (config.logFile) args.push("--log-file", config.logFile);
+  if (config.maxLogLines > 0) args.push("--max-log-lines", String(config.maxLogLines));
+  if (config.verbose) args.push("-v");
+  if (config.delaySeconds > 0) args.push("-d", String(config.delaySeconds));
+  if (config.timeoutSeconds > 0) args.push("-t", String(config.timeoutSeconds));
+
+  if (config.injectedMcps.length > 0) {
+    const allNames = config.injectedMcps.map((m) => m.name);
+    args.push("--enable-mcps", allNames.join(","));
   }
 
-  // Run the loop
-  await runLoop(config, daemon);
+  if (config.throttle.dynamic) {
+    args.push("--throttle-dynamic");
+  } else {
+    if (config.throttle.fiveHour > 0) args.push("--throttle-5h", String(config.throttle.fiveHour));
+    if (config.throttle.sevenDay > 0) args.push("--throttle-7d", String(config.throttle.sevenDay));
+    if (config.throttle.sonnet > 0) args.push("--throttle-sonnet", String(config.throttle.sonnet));
+  }
+
+  if (config.enableIde) args.push("--ide");
+  if (config.enableChrome) args.push("--chrome");
+  if (config.chromeCdpPort > 0) args.push("--chrome-cdp", String(config.chromeCdpPort));
+
+  const proc = Bun.spawn(["bun", "src/index.ts", ...args], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "ignore", "ignore"],
+    env: process.env,
+  });
+
+  return proc;
 }
 
 main().catch((err) => {

@@ -99,12 +99,13 @@ function parseUsagePage(text: string): UsageData | null {
       let resetsAt = "";
 
       for (let i = idx; i < Math.min(idx + 8, lines.length); i++) {
-        const pctMatch = lines[i].match(/(\d+)%\s*used/);
-        if (pctMatch) utilization = parseInt(pctMatch[1], 10);
+        const line = lines[i]!;
+        const pctMatch = line.match(/(\d+)%\s*used/);
+        if (pctMatch) utilization = parseInt(pctMatch[1]!, 10);
 
         if (!resetsAt) {
-          const resetMatch = lines[i].match(/Resets?\s+(?:in\s+)?(.+)/i);
-          if (resetMatch) resetsAt = resetToIso(resetMatch[1].trim());
+          const resetMatch = line.match(/Resets?\s+(?:in\s+)?(.+)/i);
+          if (resetMatch) resetsAt = resetToIso(resetMatch[1]!.trim());
         }
       }
 
@@ -144,11 +145,11 @@ function resetToIso(resetStr: string): string {
   const absMatch = resetStr.match(/(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i);
   if (absMatch) {
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const targetDay = dayNames.findIndex((d) => absMatch[1].startsWith(d));
-    let hour = parseInt(absMatch[2], 10);
-    const minute = parseInt(absMatch[3], 10);
-    if (absMatch[4].toUpperCase() === "PM" && hour < 12) hour += 12;
-    if (absMatch[4].toUpperCase() === "AM" && hour === 12) hour = 0;
+    const targetDay = dayNames.findIndex((d) => absMatch[1]!.startsWith(d));
+    let hour = parseInt(absMatch[2]!, 10);
+    const minute = parseInt(absMatch[3]!, 10);
+    if (absMatch[4]!.toUpperCase() === "PM" && hour < 12) hour += 12;
+    if (absMatch[4]!.toUpperCase() === "AM" && hour === 12) hour = 0;
 
     const reset = new Date(now);
     reset.setHours(hour, minute, 0, 0);

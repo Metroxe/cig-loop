@@ -1,12 +1,13 @@
 /**
  * Client commands for interacting with cig-loop daemons.
  *
- * Subcommands: list, status, stop, pause, resume, logs
+ * Subcommands: list, status, stop, pause, resume, logs, attach
  */
 
 import chalk from "chalk";
 import { listRuns, findRun, daemonRequest, type RunInfo } from "./daemon.js";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
+import { StickyFooter, type ControlAction } from "./terminal.js";
 
 export async function runClientCommand(command: string, arg?: string): Promise<void> {
   switch (command) {
@@ -22,6 +23,8 @@ export async function runClientCommand(command: string, arg?: string): Promise<v
       return cmdResume(arg);
     case "logs":
       return cmdLogs(arg);
+    case "attach":
+      return cmdAttach(arg);
     default:
       console.error(chalk.red(`Unknown command: ${command}`));
       process.exit(1);
@@ -161,4 +164,206 @@ async function cmdLogs(idPrefix?: string): Promise<void> {
     console.error(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
+}
+
+// ─── Attach ──────────────────────────────────────────────────────────
+
+/**
+ * Attach a TUI to a running daemon.
+ *
+ * @param idPrefix - Daemon ID prefix to find, or undefined for auto-detect
+ */
+export async function cmdAttach(idPrefix?: string): Promise<void> {
+  let run: RunInfo;
+  try {
+    run = await findRun(idPrefix);
+  } catch (err) {
+    console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+    process.exit(1);
+  }
+
+  // Fetch initial status
+  let status: any;
+  try {
+    status = await daemonRequest(run.socketPath, "/status");
+  } catch (err) {
+    console.error(chalk.red(`Failed to connect to daemon ${run.id}: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
+  }
+
+  // Check if already stopped
+  if (status.phase === "stopped") {
+    printAttachSummary(status);
+    return;
+  }
+
+  // Create the TUI (no log file — daemon handles logging)
+  const footer = new StickyFooter(undefined, 0, false);
+  await footer.activate();
+
+  // Load existing log content as scrollback
+  const logFile = status.logFile;
+  let tailOffset = 0;
+  if (logFile) {
+    try {
+      const file = Bun.file(logFile);
+      if (await file.exists()) {
+        const content = await file.text();
+        if (content.length > 0) {
+          footer.write(content);
+        }
+        tailOffset = file.size;
+      }
+    } catch {
+      // Non-critical — start with empty scrollback
+    }
+  }
+
+  // Seed footer with current daemon state
+  if (status.cumulative) footer.setCumulative(status.cumulative);
+  if (status.live) footer.setLiveStats(status.live);
+  if (status.throttleConfig) footer.setThrottleConfig(status.throttleConfig);
+  footer.setPhase(status.phase);
+
+  // Track whether we're cleaning up to avoid double-exit
+  let exiting = false;
+  let resolveAttach: () => void;
+  const attachDone = new Promise<void>((resolve) => { resolveAttach = resolve; });
+
+  const exit = async (reason: string) => {
+    if (exiting) return;
+    exiting = true;
+    clearInterval(pollTimer);
+
+    // Fetch final status
+    let finalStatus = status;
+    try {
+      finalStatus = await daemonRequest(run.socketPath, "/status");
+    } catch {}
+
+    footer.deactivate();
+    printAttachSummary(finalStatus, reason);
+    resolveAttach();
+  };
+
+  // Wire up control bar actions
+  footer.onAction = async (action: ControlAction) => {
+    try {
+      switch (action) {
+        case "pause":
+          // Toggle pause
+          if (status.phase === "paused") {
+            await daemonRequest(run.socketPath, "/resume", "POST");
+          } else {
+            await daemonRequest(run.socketPath, "/pause", "POST");
+          }
+          break;
+        case "force-stop":
+          await daemonRequest(run.socketPath, "/force-stop", "POST");
+          break;
+        case "skip":
+          await daemonRequest(run.socketPath, "/skip", "POST");
+          break;
+        case "force-quit":
+          await daemonRequest(run.socketPath, "/force-quit", "POST");
+          // Wait briefly then exit
+          await Bun.sleep(500);
+          await exit("force quit");
+          break;
+        case "background":
+          if (exiting) return;
+          exiting = true;
+          clearInterval(pollTimer);
+          footer.deactivate();
+          console.log("");
+          console.log(chalk.cyan(`  Backgrounded session ${chalk.bold(run.id)}`));
+          console.log(chalk.dim(`  Use 'cig-loop sessions' to reattach`));
+          console.log("");
+          resolveAttach();
+          break;
+        case "continue":
+          await daemonRequest(run.socketPath, "/continue", "POST");
+          break;
+      }
+    } catch (err) {
+      // Daemon may be gone
+    }
+  };
+
+  // Handle Ctrl+C — force quit the daemon
+  const sigHandler = () => {
+    daemonRequest(run.socketPath, "/force-quit", "POST").catch(() => {});
+    setTimeout(() => exit("force quit (Ctrl+C)"), 500);
+  };
+  process.on("SIGINT", sigHandler);
+  process.on("SIGTERM", sigHandler);
+
+  // Poll loop: update stats + tail log
+  const pollTimer = setInterval(async () => {
+    if (exiting) return;
+
+    try {
+      status = await daemonRequest(run.socketPath, "/status");
+
+      // Update footer stats
+      if (status.cumulative) footer.setCumulative(status.cumulative);
+      if (status.live) footer.setLiveStats(status.live);
+      footer.setPhase(status.phase);
+
+      // Tail the log file for new output
+      if (logFile) {
+        try {
+          const file = Bun.file(logFile);
+          const size = file.size;
+          if (size < tailOffset) {
+            // Log was trimmed — reset
+            tailOffset = 0;
+          }
+          if (size > tailOffset) {
+            const slice = file.slice(tailOffset, size);
+            const newContent = await slice.text();
+            footer.write(newContent);
+            tailOffset = size;
+          }
+        } catch {
+          // Log file read error — non-critical
+        }
+      }
+
+      // Detect daemon stopped
+      if (status.phase === "stopped") {
+        await exit(status.stopReason || "loop finished");
+      }
+    } catch {
+      // Socket error — daemon likely crashed
+      await exit("daemon connection lost");
+    }
+  }, 500);
+
+  // Block until the session ends (exit/background/force-quit resolves this)
+  await attachDone;
+}
+
+// ─── Attach Summary ──────────────────────────────────────────────────
+
+function printAttachSummary(status: any, reason?: string): void {
+  const cum = status.cumulative;
+  if (!cum) return;
+
+  const cols = process.stdout.columns || 80;
+  const stopReason = reason || status.stopReason || "loop finished";
+  const isFatal = stopReason.startsWith("fatal error");
+  const color = isFatal ? chalk.red : chalk.green;
+  const icon = isFatal ? "✗" : "✓";
+
+  console.log("");
+  console.log(color("━".repeat(cols)));
+  console.log(chalk.bold(color(`  ${icon} Session ${status.id || "?"} ${isFatal ? "crashed" : "finished"}`)));
+  console.log("");
+  console.log(`  Iterations:  ${cum.completedIterations}`);
+  console.log(`  Duration:    ${formatDuration(cum.totalDurationMs)}`);
+  console.log(`  Cost:        ${formatCost(cum.totalCostUsd)}`);
+  console.log(`  Tokens:      ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out`);
+  console.log(`  Reason:      ${color(stopReason)}`);
+  console.log("");
 }

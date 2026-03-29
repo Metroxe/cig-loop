@@ -52,6 +52,7 @@ After completing the role's task, output `[CONTINUE LOOP]` as your absolute fina
 
 ## Critical Rules
 
+- **Write skills for recurring processes.** If you encounter a domain-specific process that will be needed on subsequent iterations — starting dev servers, running builds, deployment steps, seed scripts, etc. — write a Claude Code skill to `.claude/skills/` so future iterations can reuse it. The project-level `.claude/` directory supports `commands/` and `skills/` subdirectories. Each skill is a directory containing a `SKILL.md` file with frontmatter (`name`, `description`) and instructions.
 - **One role per iteration.** Never switch roles mid-iteration.
 - **One PRD per iteration.** Work on exactly one PRD — the first entry in the matched board section.
 - **Always read the role file.** Do not improvise. Follow the role's instructions.

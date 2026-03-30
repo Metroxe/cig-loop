@@ -15,7 +15,7 @@ import { useState, useEffect, useSyncExternalStore } from "react";
 import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber, stripAnsi } from "./format.js";
 import { AnsiText } from "./ansi.js";
-import { formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
+import { formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS, freshenUsage } from "./usage.js";
 import { VERSION, checkForUpdate } from "./version.js";
 import type { CumulativeStats, LiveIterationStats, UsageData, ThrottleConfig } from "./types.js";
 
@@ -431,6 +431,9 @@ function Footer({
     return () => clearInterval(timer);
   }, []);
 
+  // Auto-reset: zero out buckets whose reset time has passed
+  const freshUsage = usage ? freshenUsage(usage) : null;
+
   let line1: string;
   let line2: string;
 
@@ -490,46 +493,47 @@ function Footer({
           <text>
             <span fg="#FFFF00">{line3}</span>
           </text>
-          {usage ? (() => {
+          {freshUsage ? (() => {
+            const u = freshUsage;
             const isDynamic = throttleConfig?.dynamic ?? false;
-            const cap5h = isDynamic && usage.fiveHour ? getDynamicThreshold(usage.fiveHour.resetsAt, BUCKET_PERIOD_MS.fiveHour) : null;
-            const cap7d = isDynamic && usage.sevenDay ? getDynamicThreshold(usage.sevenDay.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
-            const capModel = isDynamic && usage.sevenDaySonnet ? getDynamicThreshold(usage.sevenDaySonnet.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
-            const ageMs = now - usage.fetchedAt;
+            const cap5h = isDynamic && u.fiveHour ? getDynamicThreshold(u.fiveHour.resetsAt, BUCKET_PERIOD_MS.fiveHour) : null;
+            const cap7d = isDynamic && u.sevenDay ? getDynamicThreshold(u.sevenDay.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
+            const capModel = isDynamic && u.sevenDaySonnet ? getDynamicThreshold(u.sevenDaySonnet.resetsAt, BUCKET_PERIOD_MS.sevenDay) : null;
+            const ageMs = now - u.fetchedAt;
             const ageSec = Math.round(ageMs / 1000);
             const ageLabel = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
             const stale = ageMs > 5 * 60 * 1000;
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
-              <span fg={usageColor(usage.fiveHour?.utilization ?? 0)}>
-                {`5h: ${usage.fiveHour?.utilization ?? "?"}%`}
+              <span fg={usageColor(u.fiveHour?.utilization ?? 0)}>
+                {`5h: ${u.fiveHour?.utilization ?? "?"}%`}
               </span>
               {cap5h !== null ? (
                 <span attributes={TextAttributes.DIM}>{`/${cap5h}%`}</span>
               ) : null}
               <span attributes={TextAttributes.DIM}>
-                {` (${usage.fiveHour ? formatResetTime(usage.fiveHour.resetsAt) : "?"}) `}
+                {` (${u.fiveHour ? formatResetTime(u.fiveHour.resetsAt) : "?"}) `}
               </span>
               <span attributes={TextAttributes.DIM}>{"| "}</span>
-              <span fg={usageColor(usage.sevenDay?.utilization ?? 0)}>
-                {`7d: ${usage.sevenDay?.utilization ?? "?"}%`}
+              <span fg={usageColor(u.sevenDay?.utilization ?? 0)}>
+                {`7d: ${u.sevenDay?.utilization ?? "?"}%`}
               </span>
               {cap7d !== null ? (
                 <span attributes={TextAttributes.DIM}>{`/${cap7d}%`}</span>
               ) : null}
               <span attributes={TextAttributes.DIM}>
-                {` (${usage.sevenDay ? formatResetTime(usage.sevenDay.resetsAt) : "?"}) `}
+                {` (${u.sevenDay ? formatResetTime(u.sevenDay.resetsAt) : "?"}) `}
               </span>
               <span attributes={TextAttributes.DIM}>{"| "}</span>
-              <span fg={usageColor(usage.sevenDaySonnet?.utilization ?? 0)}>
-                {`sonnet: ${usage.sevenDaySonnet?.utilization ?? "?"}%`}
+              <span fg={usageColor(u.sevenDaySonnet?.utilization ?? 0)}>
+                {`sonnet: ${u.sevenDaySonnet?.utilization ?? "?"}%`}
               </span>
               {capModel !== null ? (
                 <span attributes={TextAttributes.DIM}>{`/${capModel}%`}</span>
               ) : null}
               <span attributes={TextAttributes.DIM}>
-                {` (${usage.sevenDaySonnet ? formatResetTime(usage.sevenDaySonnet.resetsAt) : "?"})`}
+                {` (${u.sevenDaySonnet ? formatResetTime(u.sevenDaySonnet.resetsAt) : "?"})`}
               </span>
               <span attributes={TextAttributes.DIM}>{" | "}</span>
               <span fg={stale ? "#FF9500" : "#888888"}>{ageLabel}</span>

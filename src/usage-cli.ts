@@ -5,15 +5,35 @@
  * Writes to the shared disk cache so all cig-loop processes pick it up.
  *
  * Usage:
- *   cig-loop usage                          # interactive mode
- *   cig-loop usage --5h 42 --7d 44          # CLI mode
- *   cig-loop usage --5h 42 --sonnet 26      # partial update (keeps other values)
+ *   cig-loop usage                                    # interactive mode
+ *   cig-loop usage --5h 42 --7d 44                    # CLI mode (default reset times)
+ *   cig-loop usage --5h 42 --5h-reset 1774819200000   # CLI with ms timestamp reset
  */
 
 import * as p from "@clack/prompts";
 import chalk from "chalk";
 import { loadDiskCache, saveDiskCache, formatResetTime } from "./usage.js";
 import type { UsageData, UsageBucket } from "./types.js";
+
+// ─── Common timezones ────────────────────────────────────────────────────
+
+const TIMEZONES = [
+  { value: "America/Los_Angeles", label: "Pacific (PT)" },
+  { value: "America/Denver", label: "Mountain (MT)" },
+  { value: "America/Chicago", label: "Central (CT)" },
+  { value: "America/New_York", label: "Eastern (ET)" },
+  { value: "America/Vancouver", label: "Vancouver (PT)" },
+  { value: "America/Toronto", label: "Toronto (ET)" },
+  { value: "Europe/London", label: "London (GMT/BST)" },
+  { value: "Europe/Paris", label: "Paris (CET/CEST)" },
+  { value: "Europe/Berlin", label: "Berlin (CET/CEST)" },
+  { value: "Asia/Tokyo", label: "Tokyo (JST)" },
+  { value: "Asia/Shanghai", label: "Shanghai (CST)" },
+  { value: "Australia/Sydney", label: "Sydney (AEST)" },
+  { value: "UTC", label: "UTC" },
+];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
 
 function parseArgs(args: string[]): Record<string, string> {
   const result: Record<string, string> = {};
@@ -28,12 +48,31 @@ function parseArgs(args: string[]): Record<string, string> {
   return result;
 }
 
-function makeBucket(pct: number, hoursUntilReset: number): UsageBucket {
-  const resetsAt = new Date(Date.now() + hoursUntilReset * 3600_000).toISOString();
-  return { utilization: pct, resetsAt };
+function makeBucketFromMs(pct: number, resetMs: number): UsageBucket {
+  return { utilization: pct, resetsAt: new Date(resetMs).toISOString() };
 }
 
-function showCurrent(usage: UsageData | null): void {
+function defaultResetMs(hours: number): number {
+  return Date.now() + hours * 3600_000;
+}
+
+function formatAbsoluteTime(iso: string, tz: string): string {
+  try {
+    return new Date(iso).toLocaleString("en-US", {
+      timeZone: tz,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function showCurrent(usage: UsageData | null, tz = "America/Vancouver"): void {
   if (!usage) {
     console.log(chalk.dim("  No cached usage data."));
     return;
@@ -41,122 +80,177 @@ function showCurrent(usage: UsageData | null): void {
   const age = Date.now() - usage.fetchedAt;
   const ageLabel = age < 60_000 ? `${Math.round(age / 1000)}s ago` : `${Math.round(age / 60_000)}m ago`;
   console.log(chalk.dim(`  Current values (fetched ${ageLabel}):`));
-  if (usage.fiveHour) console.log(`    5h:     ${usage.fiveHour.utilization}%  (resets in ${formatResetTime(usage.fiveHour.resetsAt)})`);
-  if (usage.sevenDay) console.log(`    7d:     ${usage.sevenDay.utilization}%  (resets in ${formatResetTime(usage.sevenDay.resetsAt)})`);
-  if (usage.sevenDaySonnet) console.log(`    sonnet: ${usage.sevenDaySonnet.utilization}%  (resets in ${formatResetTime(usage.sevenDaySonnet.resetsAt)})`);
-  if (usage.sevenDayOpus) console.log(`    opus:   ${usage.sevenDayOpus.utilization}%  (resets in ${formatResetTime(usage.sevenDayOpus.resetsAt)})`);
+  if (usage.fiveHour) console.log(`    5h:     ${usage.fiveHour.utilization}%  resets ${formatAbsoluteTime(usage.fiveHour.resetsAt, tz)} (${formatResetTime(usage.fiveHour.resetsAt)})`);
+  if (usage.sevenDay) console.log(`    7d:     ${usage.sevenDay.utilization}%  resets ${formatAbsoluteTime(usage.sevenDay.resetsAt, tz)} (${formatResetTime(usage.sevenDay.resetsAt)})`);
+  if (usage.sevenDaySonnet) console.log(`    sonnet: ${usage.sevenDaySonnet.utilization}%  resets ${formatAbsoluteTime(usage.sevenDaySonnet.resetsAt, tz)} (${formatResetTime(usage.sevenDaySonnet.resetsAt)})`);
+  if (usage.sevenDayOpus) console.log(`    opus:   ${usage.sevenDayOpus.utilization}%  resets ${formatAbsoluteTime(usage.sevenDayOpus.resetsAt, tz)} (${formatResetTime(usage.sevenDayOpus.resetsAt)})`);
   console.log("");
 }
+
+/**
+ * Parse a time string like "3:00 PM", "15:00", "Thu 8:00 PM" into a
+ * future Date in the given timezone.
+ */
+function parseTimeInTz(input: string, tz: string): Date | null {
+  const now = new Date();
+
+  // Try "HH:MM AM/PM" or "H:MM AM/PM"
+  const timeMatch = input.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (timeMatch) {
+    let hour = parseInt(timeMatch[1]!, 10);
+    const minute = parseInt(timeMatch[2]!, 10);
+    const ampm = timeMatch[3]?.toUpperCase();
+    if (ampm === "PM" && hour < 12) hour += 12;
+    if (ampm === "AM" && hour === 12) hour = 0;
+
+    // Build a date in the target timezone
+    const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    const todayStr = formatter.format(now); // "2026-03-30"
+    const candidate = new Date(`${todayStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
+
+    // Adjust for timezone offset
+    const utcCandidate = zonedToUtc(candidate, tz);
+    if (utcCandidate <= now) {
+      // Time already passed today — assume tomorrow
+      utcCandidate.setDate(utcCandidate.getDate() + 1);
+    }
+    return utcCandidate;
+  }
+
+  return null;
+}
+
+/**
+ * Convert a "local time in timezone" Date to UTC.
+ * The input Date's components are treated as being in `tz`.
+ */
+function zonedToUtc(localDate: Date, tz: string): Date {
+  // Format the local date in the target timezone to get the offset
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+  const nowInTz = formatter.format(new Date());
+  const nowTzDate = new Date(nowInTz);
+  const offsetMs = nowTzDate.getTime() - new Date().getTime();
+
+  // Apply inverse offset: local → UTC
+  return new Date(localDate.getTime() - offsetMs);
+}
+
+// ─── Interactive prompts for a single bucket ─────────────────────────────
+
+async function promptBucket(
+  label: string,
+  existing: UsageBucket | null,
+  defaultResetHours: number,
+  tz: string,
+): Promise<UsageBucket | null> {
+  const pct = await p.text({
+    message: `${label} utilization %`,
+    placeholder: existing ? String(existing.utilization) : "0",
+    validate: (v) => {
+      if (v === "") return;
+      const n = Number(v);
+      if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
+    },
+  });
+  if (p.isCancel(pct)) process.exit(0);
+
+  const currentResetLabel = existing?.resetsAt
+    ? `${formatAbsoluteTime(existing.resetsAt, tz)} (${formatResetTime(existing.resetsAt)})`
+    : "not set";
+
+  const resetInput = await p.text({
+    message: `${label} resets at (e.g. "3:00 PM", "15:00") — current: ${currentResetLabel}`,
+    placeholder: "blank = keep current",
+    validate: (v) => {
+      if (!v || v === "") return;
+      const parsed = parseTimeInTz(v, tz);
+      if (!parsed) return 'Enter time like "3:00 PM" or "15:00"';
+    },
+  });
+  if (p.isCancel(resetInput)) process.exit(0);
+
+  const utilization = pct ? Number(pct) : (existing?.utilization ?? 0);
+
+  let resetsAt: string;
+  if (resetInput) {
+    const parsed = parseTimeInTz(resetInput, tz)!;
+    resetsAt = parsed.toISOString();
+  } else if (existing?.resetsAt) {
+    resetsAt = existing.resetsAt;
+  } else {
+    resetsAt = new Date(defaultResetMs(defaultResetHours)).toISOString();
+  }
+
+  return { utilization, resetsAt };
+}
+
+// ─── Interactive mode ────────────────────────────────────────────────────
 
 async function runInteractive(existing: UsageData | null): Promise<UsageData> {
   console.log("");
   console.log(chalk.bold("Set usage percentages manually"));
-  console.log(chalk.dim("  Leave blank to keep current value. Enter 0-100 for percentage."));
+  console.log(chalk.dim("  Leave blank to keep current value."));
   console.log("");
 
-  showCurrent(existing);
-
-  const fiveHourPct = await p.text({
-    message: "5h utilization %",
-    placeholder: existing?.fiveHour ? String(existing.fiveHour.utilization) : "0",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-    },
+  // Timezone picker
+  const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tzChoice = await p.select({
+    message: "Timezone for reset times",
+    options: TIMEZONES.map((tz) => ({
+      value: tz.value,
+      label: tz.value === detectedTz ? `${tz.label} (detected)` : tz.label,
+    })),
+    initialValue: detectedTz,
   });
-  if (p.isCancel(fiveHourPct)) process.exit(0);
+  if (p.isCancel(tzChoice)) process.exit(0);
+  const tz = tzChoice as string;
 
-  const fiveHourReset = await p.text({
-    message: "5h resets in how many hours?",
-    placeholder: existing?.fiveHour ? String(Math.max(0, Math.round((new Date(existing.fiveHour.resetsAt).getTime() - Date.now()) / 3600_000 * 10) / 10)) : "5",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0) return "Must be >= 0";
-    },
-  });
-  if (p.isCancel(fiveHourReset)) process.exit(0);
+  console.log("");
+  showCurrent(existing, tz);
 
-  const sevenDayPct = await p.text({
-    message: "7d utilization %",
-    placeholder: existing?.sevenDay ? String(existing.sevenDay.utilization) : "0",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-    },
-  });
-  if (p.isCancel(sevenDayPct)) process.exit(0);
-
-  const sevenDayReset = await p.text({
-    message: "7d resets in how many hours?",
-    placeholder: existing?.sevenDay ? String(Math.max(0, Math.round((new Date(existing.sevenDay.resetsAt).getTime() - Date.now()) / 3600_000 * 10) / 10)) : "168",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0) return "Must be >= 0";
-    },
-  });
-  if (p.isCancel(sevenDayReset)) process.exit(0);
-
-  const sonnetPct = await p.text({
-    message: "Sonnet 7d utilization %",
-    placeholder: existing?.sevenDaySonnet ? String(existing.sevenDaySonnet.utilization) : "0",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0 || n > 100) return "Must be 0-100";
-    },
-  });
-  if (p.isCancel(sonnetPct)) process.exit(0);
-
-  const sonnetReset = await p.text({
-    message: "Sonnet 7d resets in how many hours?",
-    placeholder: existing?.sevenDaySonnet ? String(Math.max(0, Math.round((new Date(existing.sevenDaySonnet.resetsAt).getTime() - Date.now()) / 3600_000 * 10) / 10)) : "168",
-    validate: (v) => {
-      if (v === "") return;
-      const n = Number(v);
-      if (isNaN(n) || n < 0) return "Must be >= 0";
-    },
-  });
-  if (p.isCancel(sonnetReset)) process.exit(0);
+  const fiveHour = await promptBucket("5h", existing?.fiveHour ?? null, 5, tz);
+  const sevenDay = await promptBucket("7d", existing?.sevenDay ?? null, 168, tz);
+  const sevenDaySonnet = await promptBucket("Sonnet 7d", existing?.sevenDaySonnet ?? null, 168, tz);
 
   return {
-    fiveHour: makeBucket(
-      fiveHourPct ? Number(fiveHourPct) : (existing?.fiveHour?.utilization ?? 0),
-      fiveHourReset ? Number(fiveHourReset) : 5,
-    ),
-    sevenDay: makeBucket(
-      sevenDayPct ? Number(sevenDayPct) : (existing?.sevenDay?.utilization ?? 0),
-      sevenDayReset ? Number(sevenDayReset) : 168,
-    ),
-    sevenDaySonnet: makeBucket(
-      sonnetPct ? Number(sonnetPct) : (existing?.sevenDaySonnet?.utilization ?? 0),
-      sonnetReset ? Number(sonnetReset) : 168,
-    ),
+    fiveHour,
+    sevenDay,
+    sevenDaySonnet,
     sevenDayOpus: existing?.sevenDayOpus ?? null,
     fetchedAt: Date.now(),
   };
 }
 
+// ─── CLI mode ────────────────────────────────────────────────────────────
+
+function cliBucket(
+  pctStr: string | undefined,
+  resetStr: string | undefined,
+  existing: UsageBucket | null,
+  defaultResetHours: number,
+): UsageBucket | null {
+  if (pctStr === undefined) return existing;
+  const pct = Number(pctStr);
+  const resetMs = resetStr ? Number(resetStr) : defaultResetMs(defaultResetHours);
+  return makeBucketFromMs(pct, resetMs);
+}
+
 function runCli(args: Record<string, string>, existing: UsageData | null): UsageData {
   return {
-    fiveHour: args["5h"] !== undefined
-      ? makeBucket(Number(args["5h"]), Number(args["5h-reset"] || "5"))
-      : existing?.fiveHour ?? makeBucket(0, 5),
-    sevenDay: args["7d"] !== undefined
-      ? makeBucket(Number(args["7d"]), Number(args["7d-reset"] || "168"))
-      : existing?.sevenDay ?? makeBucket(0, 168),
-    sevenDaySonnet: args["sonnet"] !== undefined
-      ? makeBucket(Number(args["sonnet"]), Number(args["sonnet-reset"] || "168"))
-      : existing?.sevenDaySonnet ?? null,
-    sevenDayOpus: args["opus"] !== undefined
-      ? makeBucket(Number(args["opus"]), Number(args["opus-reset"] || "168"))
-      : existing?.sevenDayOpus ?? null,
+    fiveHour: cliBucket(args["5h"], args["5h-reset"], existing?.fiveHour ?? null, 5),
+    sevenDay: cliBucket(args["7d"], args["7d-reset"], existing?.sevenDay ?? null, 168),
+    sevenDaySonnet: cliBucket(args["sonnet"], args["sonnet-reset"], existing?.sevenDaySonnet ?? null, 168),
+    sevenDayOpus: cliBucket(args["opus"], args["opus-reset"], existing?.sevenDayOpus ?? null, 168),
     fetchedAt: Date.now(),
   };
 }
+
+// ─── Entry point ─────────────────────────────────────────────────────────
 
 export async function runUsageCommand(args: string[]): Promise<void> {
   const existing = await loadDiskCache();
@@ -172,8 +266,9 @@ export async function runUsageCommand(args: string[]): Promise<void> {
 
   await saveDiskCache(usage);
 
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   console.log("");
   console.log(chalk.green("Usage updated:"));
-  showCurrent(usage);
+  showCurrent(usage, tz);
   console.log(chalk.dim("  All running cig-loop instances will pick this up within ~15s."));
 }

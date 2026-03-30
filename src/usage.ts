@@ -317,6 +317,35 @@ function checkThrottleDynamic(
   return null;
 }
 
+// ─── Auto-Reset ────────────────────────────────────────────────────────
+
+/**
+ * Zero out buckets whose reset time has passed. This makes manually-set
+ * usage data "live" — when the reset time arrives, utilization drops to 0%
+ * without needing an API call.
+ */
+function freshenBucket(bucket: UsageBucket | null): UsageBucket | null {
+  if (!bucket) return null;
+  if (!bucket.resetsAt) return bucket;
+  const resetTime = new Date(bucket.resetsAt).getTime();
+  if (isNaN(resetTime)) return bucket;
+  if (Date.now() >= resetTime) {
+    return { utilization: 0, resetsAt: bucket.resetsAt };
+  }
+  return bucket;
+}
+
+export function freshenUsage(usage: UsageData): UsageData {
+  const freshened: UsageData = {
+    fiveHour: freshenBucket(usage.fiveHour),
+    sevenDay: freshenBucket(usage.sevenDay),
+    sevenDaySonnet: freshenBucket(usage.sevenDaySonnet),
+    sevenDayOpus: freshenBucket(usage.sevenDayOpus),
+    fetchedAt: usage.fetchedAt,
+  };
+  return freshened;
+}
+
 // ─── Centralized Poller ─────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;          // 5 minutes between fetches
@@ -351,7 +380,7 @@ export class UsagePoller {
     this.diskOnly = diskOnly;
   }
 
-  get usage(): UsageData | null { return this._usage; }
+  get usage(): UsageData | null { return this._usage ? freshenUsage(this._usage) : null; }
   get lastError(): string | null { return this._lastError; }
   get lastErrorAt(): number { return this._lastErrorAt; }
 

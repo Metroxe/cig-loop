@@ -977,7 +977,6 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     // refresh cycle, so we never fire extra API calls here.
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
-      let throttleLogged = false;
       while (true) {
         const usage = usagePoller.usage;
         if (!usage) break; // no data yet, proceed
@@ -987,14 +986,13 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
           break; // under threshold
         }
         daemon.setPhase("throttled");
-        if (!throttleLogged) {
-          footer.writeln(
-            chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Waiting for poller refresh...`)
-          );
-          throttleLogged = true;
-        }
-        // Wait 30s then re-check — the poller updates usage in the background
-        await Bun.sleep(30_000);
+        const ageMs = Date.now() - usage.fetchedAt;
+        const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago` : `${Math.round(ageMs / 60_000)}m ago`;
+        footer.writeln(
+          chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Data ${ageLabel}. Next poll in ~5m.`)
+        );
+        // Wait 5 min aligned with the poller cycle, then re-check
+        await Bun.sleep(5 * 60 * 1000);
       }
     }
 
@@ -1128,8 +1126,9 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     }
 
     // Refresh usage now that Claude Code has exited — best window to get
-    // fresh data since the API is less contended. Fire-and-forget.
-    usagePoller.refresh();
+    // fresh data since the API is less contended. Await so the throttle
+    // check at the top of the next iteration has fresh data.
+    await usagePoller.refresh();
 
     // Trim log if over the line limit
     await footer.flushAndTrimLog();

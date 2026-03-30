@@ -46,6 +46,24 @@ if (process.argv[2] === "sessions") {
   process.exit(0);
 }
 
+// "default" subcommand — autopilot preset with optional overrides
+if (process.argv[2] === "default") {
+  const defaults = [
+    "-p", "./autopilot/PROMPT.md",
+    "-m", "sonnet",
+    "-i", "30",
+    "--throttle-dynamic",
+    "--enable-mcps", "playwright",
+    "--stop-string", "[STOP LOOP]",
+    "--continue-string", "[CONTINUE LOOP]",
+    "--log-file", "./autopilot/log.txt",
+  ];
+  // Remove "default" from argv; append defaults BEFORE extra args so
+  // user-provided flags (argv[3+]) override them.
+  const extraArgs = process.argv.slice(3);
+  process.argv = [process.argv[0]!, process.argv[1]!, ...defaults, ...extraArgs];
+}
+
 // ─── CLI Arg Parsing ───────────────────────────────────────────────────
 
 const program = new Command()

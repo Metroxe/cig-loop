@@ -990,8 +990,12 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
           daemon.setPhase("throttled");
           const resetMs = new Date(hit.resetsAt).getTime() - Date.now();
           if (resetMs > 0) {
+            const resetDate = new Date(hit.resetsAt).toLocaleString("en-US", {
+              weekday: "short", month: "short", day: "numeric",
+              hour: "numeric", minute: "2-digit", hour12: true,
+            });
             footer.writeln(
-              chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Sleeping until reset in ${formatResetTime(hit.resetsAt)}.`)
+              chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Sleeping until reset at ${resetDate} (${formatResetTime(hit.resetsAt)}).`)
             );
             await Bun.sleep(resetMs);
             // Refresh usage after waking to get fresh data

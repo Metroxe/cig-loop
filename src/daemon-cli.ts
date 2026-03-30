@@ -283,6 +283,9 @@ export async function cmdAttach(idPrefix?: string): Promise<void> {
           if (exiting) return;
           exiting = true;
           clearInterval(pollTimer);
+          usagePoller.stop();
+          process.removeListener("SIGINT", sigHandler);
+          process.removeListener("SIGTERM", sigHandler);
           footer.deactivate();
           console.log("");
           console.log(chalk.cyan(`  Backgrounded session ${chalk.bold(run.id)}`));

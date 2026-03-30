@@ -87,38 +87,6 @@ function showCurrent(usage: UsageData | null, tz = "America/Vancouver"): void {
   console.log("");
 }
 
-/**
- * Parse a time string like "3:00 PM", "15:00", "Thu 8:00 PM" into a
- * future Date in the given timezone.
- */
-function parseTimeInTz(input: string, tz: string): Date | null {
-  const now = new Date();
-
-  // Try "HH:MM AM/PM" or "H:MM AM/PM"
-  const timeMatch = input.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
-  if (timeMatch) {
-    let hour = parseInt(timeMatch[1]!, 10);
-    const minute = parseInt(timeMatch[2]!, 10);
-    const ampm = timeMatch[3]?.toUpperCase();
-    if (ampm === "PM" && hour < 12) hour += 12;
-    if (ampm === "AM" && hour === 12) hour = 0;
-
-    // Build a date in the target timezone
-    const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
-    const todayStr = formatter.format(now); // "2026-03-30"
-    const candidate = new Date(`${todayStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
-
-    // Adjust for timezone offset
-    const utcCandidate = zonedToUtc(candidate, tz);
-    if (utcCandidate <= now) {
-      // Time already passed today — assume tomorrow
-      utcCandidate.setDate(utcCandidate.getDate() + 1);
-    }
-    return utcCandidate;
-  }
-
-  return null;
-}
 
 /**
  * Convert a "local time in timezone" Date to UTC.
@@ -140,6 +108,74 @@ function zonedToUtc(localDate: Date, tz: string): Date {
   return new Date(localDate.getTime() - offsetMs);
 }
 
+// ─── Date/time picker ────────────────────────────────────────────────────
+
+/**
+ * Build day options for the next 8 days in the given timezone.
+ */
+function buildDayOptions(tz: string): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now.getTime() + i * 24 * 3600_000);
+    const dateStr = d.toLocaleDateString("en-CA", { timeZone: tz }); // "2026-03-30"
+    const label = i === 0
+      ? `Today (${d.toLocaleDateString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" })})`
+      : i === 1
+        ? `Tomorrow (${d.toLocaleDateString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" })})`
+        : d.toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "short", day: "numeric" });
+    options.push({ value: dateStr, label });
+  }
+  return options;
+}
+
+/**
+ * Prompt for a date + time in the given timezone. Returns a UTC Date.
+ */
+async function promptDateTime(label: string, existing: UsageBucket | null, tz: string): Promise<Date | null> {
+  const currentResetLabel = existing?.resetsAt
+    ? `${formatAbsoluteTime(existing.resetsAt, tz)} (${formatResetTime(existing.resetsAt)})`
+    : "not set";
+
+  const wantChange = await p.confirm({
+    message: `${label} reset — current: ${currentResetLabel}. Change?`,
+    initialValue: !existing?.resetsAt,
+  });
+  if (p.isCancel(wantChange)) process.exit(0);
+  if (!wantChange) return null; // keep existing
+
+  const day = await p.select({
+    message: `${label} resets on`,
+    options: buildDayOptions(tz),
+  });
+  if (p.isCancel(day)) process.exit(0);
+
+  const time = await p.text({
+    message: `${label} resets at (e.g. "3:00 PM", "15:00")`,
+    placeholder: "3:00 PM",
+    validate: (v) => {
+      if (!v || v === "") return "Enter a time";
+      const m = v.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+      if (!m) return 'Enter time like "3:00 PM" or "15:00"';
+    },
+  });
+  if (p.isCancel(time)) process.exit(0);
+
+  // Parse time
+  const timeStr = time as string;
+  const m = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i)!;
+  let hour = parseInt(m[1]!, 10);
+  const minute = parseInt(m[2]!, 10);
+  const ampm = m[3]?.toUpperCase();
+  if (ampm === "PM" && hour < 12) hour += 12;
+  if (ampm === "AM" && hour === 12) hour = 0;
+
+  // Build local date in timezone, then convert to UTC
+  const dateStr = day as string; // "2026-03-30"
+  const localDate = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
+  return zonedToUtc(localDate, tz);
+}
+
 // ─── Interactive prompts for a single bucket ─────────────────────────────
 
 async function promptBucket(
@@ -159,27 +195,13 @@ async function promptBucket(
   });
   if (p.isCancel(pct)) process.exit(0);
 
-  const currentResetLabel = existing?.resetsAt
-    ? `${formatAbsoluteTime(existing.resetsAt, tz)} (${formatResetTime(existing.resetsAt)})`
-    : "not set";
-
-  const resetInput = await p.text({
-    message: `${label} resets at (e.g. "3:00 PM", "15:00") — current: ${currentResetLabel}`,
-    placeholder: "blank = keep current",
-    validate: (v) => {
-      if (!v || v === "") return;
-      const parsed = parseTimeInTz(v, tz);
-      if (!parsed) return 'Enter time like "3:00 PM" or "15:00"';
-    },
-  });
-  if (p.isCancel(resetInput)) process.exit(0);
-
   const utilization = pct ? Number(pct) : (existing?.utilization ?? 0);
 
+  const newResetDate = await promptDateTime(label, existing, tz);
+
   let resetsAt: string;
-  if (resetInput) {
-    const parsed = parseTimeInTz(resetInput, tz)!;
-    resetsAt = parsed.toISOString();
+  if (newResetDate) {
+    resetsAt = newResetDate.toISOString();
   } else if (existing?.resetsAt) {
     resetsAt = existing.resetsAt;
   } else {

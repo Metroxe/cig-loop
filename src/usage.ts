@@ -39,6 +39,19 @@ export async function saveDiskCache(usage: UsageData): Promise<void> {
 // ─── Credential Reading ─────────────────────────────────────────────────
 
 let cachedToken: string | null | undefined; // undefined = not yet read
+let cachedUserAgent: string | undefined;
+
+function getClaudeUserAgent(): string {
+  if (cachedUserAgent) return cachedUserAgent;
+  try {
+    const result = Bun.spawnSync(["claude", "--version"]);
+    const ver = result.stdout.toString().trim().split(" ")[0]; // "2.1.87"
+    cachedUserAgent = `claude-code/${ver}`;
+  } catch {
+    cachedUserAgent = "claude-code/2.1.87";
+  }
+  return cachedUserAgent;
+}
 
 async function readOAuthToken(): Promise<string | null> {
   if (cachedToken !== undefined) return cachedToken;
@@ -111,6 +124,7 @@ async function doFetch(maxRetries: number): Promise<UsageData | null> {
         headers: {
           Authorization: `Bearer ${token}`,
           "anthropic-beta": "oauth-2025-04-20",
+          "User-Agent": getClaudeUserAgent(),
         },
         signal: AbortSignal.timeout(10_000),
       });

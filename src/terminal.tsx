@@ -392,10 +392,13 @@ function ControlBar({ phase, focusIdx, onAction }: {
 
 // ─── Footer Component ─────────────────────────────────────────────────
 
-function usageColor(pct: number): string {
-  if (pct >= 80) return "#FF5555";
-  if (pct >= 50) return "#FFFF00";
-  return "#50FA7B";
+function usageColor(pct: number, cap: number | null): string {
+  // When a dynamic cap is available, color relative to it
+  const limit = cap ?? 100;
+  const ratio = limit > 0 ? pct / limit : 1;
+  if (ratio >= 0.95) return "#FF5555";  // red: ≥95% of cap
+  if (ratio >= 0.75) return "#FFFF00";  // yellow: ≥75% of cap
+  return "#50FA7B";                      // green: under 75%
 }
 
 function Footer({
@@ -506,7 +509,7 @@ function Footer({
             return (
             <text>
               <span attributes={TextAttributes.DIM}>{" Usage: "}</span>
-              <span fg={usageColor(u.fiveHour?.utilization ?? 0)}>
+              <span fg={usageColor(u.fiveHour?.utilization ?? 0, cap5h)}>
                 {`5h: ${u.fiveHour?.utilization ?? "?"}%`}
               </span>
               {cap5h !== null ? (
@@ -516,7 +519,7 @@ function Footer({
                 {` (${u.fiveHour ? formatResetTime(u.fiveHour.resetsAt) : "?"}) `}
               </span>
               <span attributes={TextAttributes.DIM}>{"| "}</span>
-              <span fg={usageColor(u.sevenDay?.utilization ?? 0)}>
+              <span fg={usageColor(u.sevenDay?.utilization ?? 0, cap7d)}>
                 {`7d: ${u.sevenDay?.utilization ?? "?"}%`}
               </span>
               {cap7d !== null ? (
@@ -526,7 +529,7 @@ function Footer({
                 {` (${u.sevenDay ? formatResetTime(u.sevenDay.resetsAt) : "?"}) `}
               </span>
               <span attributes={TextAttributes.DIM}>{"| "}</span>
-              <span fg={usageColor(u.sevenDaySonnet?.utilization ?? 0)}>
+              <span fg={usageColor(u.sevenDaySonnet?.utilization ?? 0, capModel)}>
                 {`sonnet: ${u.sevenDaySonnet?.utilization ?? "?"}%`}
               </span>
               {capModel !== null ? (

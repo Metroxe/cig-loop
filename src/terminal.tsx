@@ -16,6 +16,7 @@ import chalk from "chalk";
 import { formatCost, formatDuration, formatNumber, stripAnsi } from "./format.js";
 import { AnsiText } from "./ansi.js";
 import { formatResetTime, getDynamicThreshold, BUCKET_PERIOD_MS } from "./usage.js";
+import { VERSION, checkForUpdate } from "./version.js";
 import type { CumulativeStats, LiveIterationStats, UsageData, ThrottleConfig } from "./types.js";
 
 const orange = chalk.hex("#FF9500");
@@ -42,6 +43,8 @@ interface StoreState {
   throttleConfig: ThrottleConfig | null;
   phase: "starting" | "running" | "throttled" | "paused" | "suspended" | "stopping" | "stopped" | null;
   controlFocusIdx: number;
+  version: string;
+  updateAvailable: string | null;
 }
 
 class TerminalStore {
@@ -67,6 +70,8 @@ class TerminalStore {
       throttleConfig: null,
       phase: null,
       controlFocusIdx: 0,
+      version: "",
+      updateAvailable: null,
     };
   }
 
@@ -159,6 +164,12 @@ class TerminalStore {
 
   setControlFocusIdx(idx: number): void {
     this.state.controlFocusIdx = idx;
+    this.emit();
+  }
+
+  setVersion(version: string, updateAvailable: string | null): void {
+    this.state.version = version;
+    this.state.updateAvailable = updateAvailable;
     this.emit();
   }
 
@@ -396,6 +407,8 @@ function Footer({
   throttleConfig,
   phase,
   controlFocusIdx,
+  version,
+  updateAvailable,
   onAction,
 }: {
   liveStats: LiveIterationStats | null;
@@ -406,6 +419,8 @@ function Footer({
   throttleConfig: ThrottleConfig | null;
   phase: StoreState["phase"];
   controlFocusIdx: number;
+  version: string;
+  updateAvailable: string | null;
   onAction?: (action: ControlAction) => void;
 }): any {
   const [now, setNow] = useState(Date.now());
@@ -453,6 +468,14 @@ function Footer({
       <text>
         <span attributes={TextAttributes.DIM}>{"━".repeat(cols)}</span>
       </text>
+      {version ? (
+        <text>
+          <span attributes={TextAttributes.DIM}>{` cig-loop v${version}`}</span>
+          {updateAvailable ? (
+            <span fg="#FFFF00">{` (v${updateAvailable} available — run: cig-loop update)`}</span>
+          ) : null}
+        </text>
+      ) : null}
       <box
         flexDirection={isWide ? "row" : "column"}
         alignItems={isWide ? "flex-start" : undefined}
@@ -576,6 +599,8 @@ function App({ store, onAction }: { store: TerminalStore; onAction?: (action: Co
         throttleConfig={state.throttleConfig}
         phase={state.phase}
         controlFocusIdx={state.controlFocusIdx}
+        version={state.version}
+        updateAvailable={state.updateAvailable}
         onAction={onAction}
       />
     </box>
@@ -676,6 +701,12 @@ export class StickyFooter {
 
     // Usage polling is handled externally by UsagePoller — it calls
     // setUsage() and setUsageFetchError() on this footer instance.
+
+    // Version info — set immediately, check for update in background
+    this.store.setVersion(VERSION, null);
+    checkForUpdate().then((newer) => {
+      if (newer) this.store.setVersion(VERSION, newer);
+    });
   }
 
   deactivate(): void {
@@ -751,6 +782,10 @@ export class StickyFooter {
 
   setUsageFetchError(error: string): void {
     this.store.setUsageFetchError(error);
+  }
+
+  setVersion(version: string, updateAvailable: string | null): void {
+    this.store.setVersion(version, updateAvailable);
   }
 
   setThrottleConfig(config: ThrottleConfig | null): void {

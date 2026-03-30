@@ -972,22 +972,29 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     daemon.setIteration(i);
     daemon.resetIterationAbort();
 
-    // Throttle check: pause if any usage bucket exceeds its threshold
+    // Throttle check: pause if any usage bucket exceeds its threshold.
+    // Uses the poller's cached data — the poller handles the 5-min global
+    // refresh cycle, so we never fire extra API calls here.
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
+      let throttleLogged = false;
       while (true) {
-        const usage = await usagePoller.refresh();
-        if (!usage) break; // can't check, proceed
+        const usage = usagePoller.usage;
+        if (!usage) break; // no data yet, proceed
         const hit = checkThrottle(usage, config.model, config.throttle);
         if (!hit) {
           daemon.setPhase("running");
           break; // under threshold
         }
         daemon.setPhase("throttled");
-        footer.writeln(
-          chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Checking in 60s...`)
-        );
-        await Bun.sleep(60_000);
+        if (!throttleLogged) {
+          footer.writeln(
+            chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Waiting for poller refresh...`)
+          );
+          throttleLogged = true;
+        }
+        // Wait 30s then re-check — the poller updates usage in the background
+        await Bun.sleep(30_000);
       }
     }
 

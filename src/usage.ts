@@ -6,7 +6,6 @@
  */
 
 import type { UsageBucket, UsageData, ThrottleConfig } from "./types.js";
-import { scrapeUsage } from "./usage-scraper.js";
 
 // ─── Disk Cache ─────────────────────────────────────────────────────────
 
@@ -316,7 +315,6 @@ const FRESHNESS_THRESHOLD_MS = POLL_INTERVAL_MS - 30_000; // skip fetch if disk 
  * fetch it checks whether another process already wrote fresh data.
  */
 export class UsagePoller {
-  private cdpPort: number;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private diskCheckTimer: ReturnType<typeof setInterval> | null = null;
   private _usage: UsageData | null = null;
@@ -328,10 +326,6 @@ export class UsagePoller {
   onUsage: ((usage: UsageData) => void) | null = null;
   /** Called whenever a fetch attempt fails. */
   onError: ((error: string, at: number) => void) | null = null;
-
-  constructor(cdpPort = 0) {
-    this.cdpPort = cdpPort;
-  }
 
   get usage(): UsageData | null { return this._usage; }
   get lastError(): string | null { return this._lastError; }
@@ -391,25 +385,18 @@ export class UsagePoller {
       let usage: UsageData | null = null;
       let errorMsg: string | null = null;
 
-      // Try API first (quick, no browser overhead)
+      // Fetch from API
       {
         const beforeFetchedAt = cachedUsage?.fetchedAt ?? 0;
-        usage = await fetchUsage(true, 0);
+        usage = await fetchUsage(true, 3);
         // fetchUsage returns stale cache on failure — detect by checking fetchedAt
         if (usage && usage.fetchedAt <= beforeFetchedAt) {
           usage = null;
         }
       }
 
-      // Fall back to CDP scrape if API failed and CDP is configured
-      if (!usage && this.cdpPort > 0) {
-        usage = await scrapeUsage(this.cdpPort);
-      }
-
       if (!usage) {
-        errorMsg = this.cdpPort > 0
-          ? "API + CDP scrape failed"
-          : "API fetch failed (rate-limited)";
+        errorMsg = "API fetch failed (rate-limited)";
       }
 
       if (usage) {

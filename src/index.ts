@@ -88,7 +88,6 @@ const program = new Command()
   .option("--throttle-7d <percent>", "pause when 7d usage exceeds % (0=off)", "0")
   .option("--throttle-sonnet <percent>", "pause when sonnet/opus usage exceeds % (0=off)", "0")
   .option("--throttle-dynamic", "dynamic throttle: pace usage proportionally across each window", false)
-  .option("--chrome-cdp <port>", "scrape usage from claude.ai via Chrome CDP port (bypasses API rate limit)")
   .option("--daemon", "run headless as a daemon with a control socket", false)
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
@@ -704,7 +703,6 @@ async function gatherConfig(): Promise<LoopConfig> {
     delaySeconds: parseFloat(core.delaySeconds as string) || 0,
     timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle,
-    chromeCdpPort: parseInt(opts.chromeCdp, 10) || 0,
   };
 }
 
@@ -772,7 +770,6 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
       sonnet: parseInt(opts.throttleSonnet, 10) || 0,
       dynamic: opts.throttleDynamic ?? false,
     },
-    chromeCdpPort: parseInt(opts.chromeCdp, 10) || 0,
   };
 }
 
@@ -806,7 +803,6 @@ function buildRerunCommand(config: LoopConfig): string {
   }
   if (config.enableIde) parts.push("--ide");
   if (config.enableChrome) parts.push("--chrome");
-  if (config.chromeCdpPort > 0) parts.push("--chrome-cdp", String(config.chromeCdpPort));
 
   parts.push("--no-interactive");
   parts.push("-i", String(config.iterations));
@@ -930,11 +926,10 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   await footer.activate();
   footer.setThrottleConfig(config.throttle);
   daemon.setThrottleConfig(config.throttle);
-  if (config.chromeCdpPort > 0) daemon.setChromeCdpPort(config.chromeCdpPort);
 
   // Centralized usage poller — shared across this process and coordinates
   // with other cig-loop processes via the disk cache.
-  usagePoller = new UsagePoller(config.chromeCdpPort);
+  usagePoller = new UsagePoller();
   usagePoller.onUsage = (usage) => footer.setUsage(usage);
   usagePoller.onError = (error) => footer.setUsageFetchError(error);
   await usagePoller.start();
@@ -1364,7 +1359,6 @@ function spawnDaemonChild(config: LoopConfig) {
 
   if (config.enableIde) args.push("--ide");
   if (config.enableChrome) args.push("--chrome");
-  if (config.chromeCdpPort > 0) args.push("--chrome-cdp", String(config.chromeCdpPort));
 
   // Use process.execPath so this works both in dev (bun src/index.ts)
   // and as a compiled binary (cig-loop). For compiled binaries, argv[0]

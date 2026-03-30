@@ -46,6 +46,12 @@ if (process.argv[2] === "sessions") {
   process.exit(0);
 }
 
+if (process.argv[2] === "usage") {
+  const { runUsageCommand } = await import("./usage-cli.js");
+  await runUsageCommand(process.argv.slice(3));
+  process.exit(0);
+}
+
 // "default" subcommand — autopilot preset with optional overrides
 if (process.argv[2] === "default") {
   const defaults = [

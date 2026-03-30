@@ -1097,6 +1097,13 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
         stopReason = `Claude killed by ${signalName} (exit code ${result.exitCode}) on iteration ${i}`;
         footer.writeln(chalk.red(`  ${stopReason} - stopping loop`));
         break;
+      } else {
+        // Non-zero exit (e.g. rate limit hit mid-run) — retry this iteration
+        // after the throttle check at the top of the loop catches it.
+        footer.writeln(chalk.yellow(`  Will retry iteration ${i} after throttle check`));
+        usagePoller.refresh();
+        i--;
+        continue;
       }
     }
 

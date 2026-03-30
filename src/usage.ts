@@ -335,11 +335,21 @@ export class UsagePoller {
   private _lastError: string | null = null;
   private _lastErrorAt = 0;
   private _fetching = false;
+  private diskOnly: boolean;
 
   /** Called whenever usage data changes (from fetch or cross-process update). */
   onUsage: ((usage: UsageData) => void) | null = null;
   /** Called whenever a fetch attempt fails. */
   onError: ((error: string, at: number) => void) | null = null;
+
+  /**
+   * @param diskOnly  When true, never makes API calls — only reads the disk
+   *                  cache written by another process. Use this for the attach
+   *                  TUI so it doesn't compete for API quota.
+   */
+  constructor(diskOnly = false) {
+    this.diskOnly = diskOnly;
+  }
 
   get usage(): UsageData | null { return this._usage; }
   get lastError(): string | null { return this._lastError; }
@@ -365,9 +375,12 @@ export class UsagePoller {
     if (this.diskCheckTimer) { clearInterval(this.diskCheckTimer); this.diskCheckTimer = null; }
   }
 
-  /** Force a fresh fetch — used by throttle checks that need up-to-date data. */
-  async refresh(): Promise<UsageData | null> {
-    return this.doFetchCycle(true);
+  /**
+   * Force a fresh fetch — used after iterations end when the API is available.
+   * @param retries  Number of 429 retries (default 3 for post-iteration window)
+   */
+  async refresh(retries = 3): Promise<UsageData | null> {
+    return this.doFetchCycle(true, retries);
   }
 
   private async poll(): Promise<void> {
@@ -377,32 +390,38 @@ export class UsagePoller {
   /**
    * Core fetch cycle.  When `force` is false, skips the network call if the
    * disk cache was recently updated by another process.
+   *
+   * @param force   Bypass freshness check (used after iterations end)
+   * @param retries Number of 429 retries (default 0 for background polls,
+   *                use 3 for post-iteration when API is likely available)
    */
-  private async doFetchCycle(force: boolean): Promise<UsageData | null> {
+  private async doFetchCycle(force: boolean, retries = 0): Promise<UsageData | null> {
     if (this._fetching) return this._usage;
     this._fetching = true;
 
     try {
-      // Check if another process already wrote fresh data
-      if (!force) {
-        const diskData = await loadDiskCache();
-        if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
-          this._usage = diskData;
-          this._lastError = null;
-          this.onUsage?.(diskData);
-        }
-        if (diskData && Date.now() - diskData.fetchedAt < FRESHNESS_THRESHOLD_MS) {
-          return this._usage;
-        }
+      // Always check disk cache first — another process may have fresh data
+      const diskData = await loadDiskCache();
+      if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
+        this._usage = diskData;
+        this._lastError = null;
+        this.onUsage?.(diskData);
+      }
+
+      // Skip API call if disk data is fresh enough (or if we're disk-only)
+      if (this.diskOnly) return this._usage;
+      if (!force && diskData && Date.now() - diskData.fetchedAt < FRESHNESS_THRESHOLD_MS) {
+        return this._usage;
       }
 
       let usage: UsageData | null = null;
       let errorMsg: string | null = null;
 
-      // Fetch from API
+      // Fetch from API — single attempt for background polls, retries for
+      // post-iteration refreshes when the API window is open.
       {
         const beforeFetchedAt = cachedUsage?.fetchedAt ?? 0;
-        usage = await fetchUsage(true, 3);
+        usage = await fetchUsage(true, retries);
         // fetchUsage returns stale cache on failure — detect by checking fetchedAt
         if (usage && usage.fetchedAt <= beforeFetchedAt) {
           usage = null;

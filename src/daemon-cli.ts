@@ -202,8 +202,9 @@ export async function cmdAttach(idPrefix?: string): Promise<void> {
   const footer = new StickyFooter(undefined, 0, false);
   await footer.activate();
 
-  // Usage poller — uses CDP if daemon has it configured, otherwise API + disk cache
-  const usagePoller = new UsagePoller();
+  // Usage poller in disk-only mode — the daemon process handles API calls
+  // and writes to the shared disk cache; we just read it.
+  const usagePoller = new UsagePoller(true);
   usagePoller.onUsage = (usage) => footer.setUsage(usage);
   usagePoller.onError = (error) => footer.setUsageFetchError(error);
   await usagePoller.start();

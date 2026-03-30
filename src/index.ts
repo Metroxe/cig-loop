@@ -977,22 +977,22 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     // refresh cycle, so we never fire extra API calls here.
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
-      while (true) {
-        const usage = usagePoller.usage;
-        if (!usage) break; // no data yet, proceed
+      const usage = usagePoller.usage;
+      if (usage) {
         const hit = checkThrottle(usage, config.model, config.throttle);
-        if (!hit) {
+        if (hit) {
+          daemon.setPhase("throttled");
+          const resetMs = new Date(hit.resetsAt).getTime() - Date.now();
+          if (resetMs > 0) {
+            footer.writeln(
+              chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Sleeping until reset in ${formatResetTime(hit.resetsAt)}.`)
+            );
+            await Bun.sleep(resetMs);
+            // Refresh usage after waking to get fresh data
+            await usagePoller.refresh();
+          }
           daemon.setPhase("running");
-          break; // under threshold
         }
-        daemon.setPhase("throttled");
-        const ageMs = Date.now() - usage.fetchedAt;
-        const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago` : `${Math.round(ageMs / 60_000)}m ago`;
-        footer.writeln(
-          chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resets in ${formatResetTime(hit.resetsAt)}. Data ${ageLabel}. Next poll in ~5m.`)
-        );
-        // Wait 5 min aligned with the poller cycle, then re-check
-        await Bun.sleep(5 * 60 * 1000);
       }
     }
 

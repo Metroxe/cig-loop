@@ -18,7 +18,7 @@ import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import { VERSION, checkForUpdate } from "./version.js";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
-import { checkThrottle, formatResetTime, UsagePoller } from "./usage.js";
+import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS } from "./usage.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -984,26 +984,54 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     // refresh cycle, so we never fire extra API calls here.
     const hasThrottle = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
     if (hasThrottle) {
-      const usage = usagePoller.usage;
-      if (usage) {
+      while (true) {
+        const usage = usagePoller.usage;
+        if (!usage) break; // no data, proceed
+
         const hit = checkThrottle(usage, config.model, config.throttle);
-        if (hit) {
-          daemon.setPhase("throttled");
-          const resetMs = new Date(hit.resetsAt).getTime() - Date.now();
-          if (resetMs > 0) {
-            const resetDate = new Date(hit.resetsAt).toLocaleString("en-US", {
-              weekday: "short", month: "short", day: "numeric",
-              hour: "numeric", minute: "2-digit", hour12: true,
-            });
-            footer.writeln(
-              chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Sleeping until reset at ${resetDate} (${formatResetTime(hit.resetsAt)}).`)
-            );
-            await Bun.sleep(resetMs);
-            // Refresh usage after waking to get fresh data
-            await usagePoller.refresh();
-          }
+        if (!hit) {
           daemon.setPhase("running");
+          break;
         }
+
+        daemon.setPhase("throttled");
+
+        // Calculate when the dynamic threshold will catch up to current utilization
+        const periodMs = hit.bucket === "5h" ? BUCKET_PERIOD_MS.fiveHour : BUCKET_PERIOD_MS.sevenDay;
+        const catchupTime = config.throttle.dynamic
+          ? getThresholdCatchupTime(hit.utilization, hit.resetsAt, periodMs)
+          : new Date(hit.resetsAt).getTime();
+        const waitMs = catchupTime - Date.now();
+
+        if (waitMs <= 0) {
+          // Should be clear now — refresh and recheck
+          await usagePoller.refresh();
+          continue;
+        }
+
+        const catchupDate = new Date(catchupTime).toLocaleString("en-US", {
+          weekday: "short", month: "short", day: "numeric",
+          hour: "numeric", minute: "2-digit", hour12: true,
+        });
+        const waitMin = Math.round(waitMs / 60_000);
+        footer.writeln(
+          chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resuming at ${catchupDate} (~${waitMin}m). Checking disk every 30s.`)
+        );
+
+        // Wait, but check disk cache every 30s in case the cron updates it
+        const deadline = Date.now() + waitMs;
+        while (Date.now() < deadline) {
+          await Bun.sleep(30_000);
+          // Disk cache may have been updated by the usage-updater cron
+          const freshUsage = usagePoller.usage;
+          if (freshUsage) {
+            const freshHit = checkThrottle(freshUsage, config.model, config.throttle);
+            if (!freshHit) break; // cleared!
+          }
+        }
+
+        // Refresh from API now that we should be clear
+        await usagePoller.refresh();
       }
     }
 

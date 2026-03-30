@@ -214,6 +214,28 @@ export function getDynamicThreshold(resetsAt: string, totalPeriodMs: number): nu
   return Math.round((elapsed / totalPeriodMs) * 100);
 }
 
+/**
+ * Calculate when the dynamic threshold will reach a given utilization percentage.
+ * Returns a Unix ms timestamp, or 0 if it can't be calculated.
+ *
+ * e.g. at 97% utilization with a 5h bucket, the threshold reaches 97%
+ * when 97% of the window has elapsed — about 10 min before full reset.
+ */
+export function getThresholdCatchupTime(
+  utilization: number,
+  resetsAt: string,
+  totalPeriodMs: number,
+): number {
+  const resetTime = new Date(resetsAt).getTime();
+  if (isNaN(resetTime)) return 0;
+  // threshold = elapsed / totalPeriod * 100
+  // We want threshold >= utilization, so elapsed >= utilization/100 * totalPeriod
+  // wakeTime = resetTime - totalPeriod + (utilization/100 * totalPeriod)
+  // = resetTime - totalPeriod * (1 - utilization/100)
+  const wakeTime = resetTime - totalPeriodMs * (1 - utilization / 100);
+  return Math.max(wakeTime, Date.now()); // never in the past
+}
+
 export interface ThrottleHit {
   bucket: string;
   utilization: number;

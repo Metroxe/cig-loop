@@ -396,24 +396,35 @@ export class UsagePoller {
    *                use 3 for post-iteration when API is likely available)
    */
   private async doFetchCycle(force: boolean, retries = 0): Promise<UsageData | null> {
-    if (this._fetching) return this._usage;
+    // Always check disk cache — another process may have fresh data
+    const diskData = await loadDiskCache();
+    if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
+      this._usage = diskData;
+      this._lastError = null;
+      this.onUsage?.(diskData);
+    }
+
+    // Disk-only mode: surface a warning when data goes stale (daemon may be down)
+    if (this.diskOnly) {
+      if (this._usage && Date.now() - this._usage.fetchedAt > POLL_INTERVAL_MS * 2) {
+        this._lastError = "usage data stale — daemon may not be fetching";
+        this._lastErrorAt = Date.now();
+        this.onError?.(this._lastError, this._lastErrorAt);
+      }
+      return this._usage;
+    }
+
+    // Skip API call if disk data is fresh enough
+    if (!force && diskData && Date.now() - diskData.fetchedAt < FRESHNESS_THRESHOLD_MS) {
+      return this._usage;
+    }
+
+    // Guard against concurrent fetches — but don't block forced refreshes
+    // (post-iteration) since those have retries and a better API window.
+    if (this._fetching && !force) return this._usage;
     this._fetching = true;
 
     try {
-      // Always check disk cache first — another process may have fresh data
-      const diskData = await loadDiskCache();
-      if (diskData && diskData.fetchedAt > (this._usage?.fetchedAt ?? 0)) {
-        this._usage = diskData;
-        this._lastError = null;
-        this.onUsage?.(diskData);
-      }
-
-      // Skip API call if disk data is fresh enough (or if we're disk-only)
-      if (this.diskOnly) return this._usage;
-      if (!force && diskData && Date.now() - diskData.fetchedAt < FRESHNESS_THRESHOLD_MS) {
-        return this._usage;
-      }
-
       let usage: UsageData | null = null;
       let errorMsg: string | null = null;
 
@@ -436,8 +447,7 @@ export class UsagePoller {
         this._usage = usage;
         this._lastError = null;
         cachedUsage = usage;         // keep in-memory cache in sync
-        saveDiskCache(usage);        // share with other processes
-        this.onUsage?.(usage);
+        this.onUsage?.(usage);      // disk save already done by fetchUsage
       } else if (errorMsg) {
         this._lastError = errorMsg;
         this._lastErrorAt = Date.now();

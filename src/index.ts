@@ -976,6 +976,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
 
     daemon.setPhase("running");
     daemon.setIteration(i);
+    await daemon.persistState();
     daemon.resetIterationAbort();
 
     // Throttle check: pause if any usage bucket exceeds its threshold.

@@ -34,6 +34,8 @@ export interface DaemonState {
   throttleConfig?: ThrottleConfig | null;
   /** Original CLI args for respawning (continue/rerun) */
   spawnArgs?: string[];
+  /** Show the smoking cigarette animation */
+  showCig?: boolean;
 }
 
 // ─── ID Generation ──────────────────────────────────────────────────────
@@ -87,6 +89,7 @@ export class DaemonController {
         totalOutputTokens: 0,
       },
       live: null,
+      showCig: config.showCig,
     };
   }
 

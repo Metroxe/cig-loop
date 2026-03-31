@@ -45,6 +45,7 @@ interface StoreState {
   controlFocusIdx: number;
   version: string;
   updateAvailable: string | null;
+  showCig: boolean;
 }
 
 class TerminalStore {
@@ -72,6 +73,7 @@ class TerminalStore {
       controlFocusIdx: 0,
       version: "",
       updateAvailable: null,
+      showCig: false,
     };
   }
 
@@ -170,6 +172,11 @@ class TerminalStore {
   setVersion(version: string, updateAvailable: string | null): void {
     this.state.version = version;
     this.state.updateAvailable = updateAvailable;
+    this.emit();
+  }
+
+  setShowCig(show: boolean): void {
+    this.state.showCig = show;
     this.emit();
   }
 
@@ -412,6 +419,7 @@ function Footer({
   controlFocusIdx,
   version,
   updateAvailable,
+  showCig,
   onAction,
 }: {
   liveStats: LiveIterationStats | null;
@@ -424,6 +432,7 @@ function Footer({
   controlFocusIdx: number;
   version: string;
   updateAvailable: string | null;
+  showCig: boolean;
   onAction?: (action: ControlAction) => void;
 }): any {
   const [now, setNow] = useState(Date.now());
@@ -565,7 +574,7 @@ function Footer({
           })()}
         </box>
         {!isWide && <text><span>{" "}</span></text>}
-        <SmokingCigarette />
+        {showCig && <SmokingCigarette />}
       </box>
       {phase && <ControlBar phase={phase} focusIdx={controlFocusIdx} onAction={onAction} />}
     </box>
@@ -611,6 +620,7 @@ function App({ store, onAction }: { store: TerminalStore; onAction?: (action: Co
         controlFocusIdx={state.controlFocusIdx}
         version={state.version}
         updateAvailable={state.updateAvailable}
+        showCig={state.showCig}
         onAction={onAction}
       />
     </box>
@@ -804,6 +814,10 @@ export class StickyFooter {
 
   setPhase(phase: StoreState["phase"]): void {
     this.store.setPhase(phase);
+  }
+
+  setShowCig(show: boolean): void {
+    this.store.setShowCig(show);
   }
 
   getCumulative(): CumulativeStats {

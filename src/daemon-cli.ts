@@ -362,6 +362,7 @@ export async function cmdAttach(idPrefix?: string): Promise<void> {
   if (status.cumulative) footer.setCumulative(status.cumulative);
   if (status.live) footer.setLiveStats(status.live);
   if (status.throttleConfig) footer.setThrottleConfig(status.throttleConfig);
+  if (status.showCig) footer.setShowCig(true);
   footer.setPhase(status.phase);
 
   // Track whether we're cleaning up to avoid double-exit

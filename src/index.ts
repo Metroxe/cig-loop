@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS } from "./usage.js";
+import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS, freshenUsage, loadDiskCache } from "./usage.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -96,6 +96,7 @@ const program = new Command()
   .option("--throttle-7d <percent>", "pause when 7d usage exceeds % (0=off)", "0")
   .option("--throttle-sonnet <percent>", "pause when sonnet/opus usage exceeds % (0=off)", "0")
   .option("--throttle-dynamic", "dynamic throttle: pace usage proportionally across each window", false)
+  .option("--cig", "show smoking cigarette animation in footer", false)
   .option("--daemon", "run headless as a daemon with a control socket", false)
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
@@ -711,6 +712,7 @@ async function gatherConfig(): Promise<LoopConfig> {
     delaySeconds: parseFloat(core.delaySeconds as string) || 0,
     timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle,
+    showCig: opts.cig ?? false,
   };
 }
 
@@ -778,6 +780,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
       sonnet: parseInt(opts.throttleSonnet, 10) || 0,
       dynamic: opts.throttleDynamic ?? false,
     },
+    showCig: opts.cig ?? false,
   };
 }
 
@@ -811,6 +814,7 @@ function buildRerunCommand(config: LoopConfig): string {
   }
   if (config.enableIde) parts.push("--ide");
   if (config.enableChrome) parts.push("--chrome");
+  if (config.showCig) parts.push("--cig");
 
   parts.push("--no-interactive");
   parts.push("-i", String(config.iterations));
@@ -1018,24 +1022,35 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
           chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resuming at ${catchupDate} (~${waitMin}m). Checking disk every 30s.`)
         );
 
-        // Wait, but check disk cache every 30s in case the cron updates it.
-        // Also check for stop/quit signals so the daemon can exit cleanly.
+        // Pause the poller so background API fetches can't overwrite the
+        // disk cache with potentially-stale API data while we wait.
+        usagePoller.stop();
+
+        // Wait, checking disk cache every 30s for cron/manual updates.
         const deadline = Date.now() + waitMs;
         let throttleCleared = false;
         while (Date.now() < deadline) {
           await Bun.sleep(30_000);
           if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
-          // Disk cache may have been updated by the usage-updater cron
-          const freshUsage = usagePoller.usage;
-          if (freshUsage) {
-            const freshHit = checkThrottle(freshUsage, config.model, config.throttle);
-            if (!freshHit) { throttleCleared = true; break; }
+          // Read disk cache directly — only crons or manual `cig-loop usage`
+          // writes land here while the poller is stopped.
+          const diskUsage = await loadDiskCache();
+          if (diskUsage) {
+            const freshened = freshenUsage(diskUsage);
+            const freshHit = checkThrottle(freshened, config.model, config.throttle);
+            if (!freshHit) {
+              throttleCleared = true;
+              footer.writeln(chalk.green(`  Throttle cleared — cache now below threshold.`));
+              break;
+            }
+            // Update footer display with latest cache data
+            footer.setUsage(freshened);
           }
         }
         if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
 
-        // Refresh from API now that we should be clear
-        await usagePoller.refresh();
+        // Restart the poller now that we're exiting the throttle wait
+        await usagePoller.start(false);
       }
     }
 
@@ -1407,6 +1422,7 @@ function buildConfigArgs(config: LoopConfig): string[] {
 
   if (config.enableIde) args.push("--ide");
   if (config.enableChrome) args.push("--chrome");
+  if (config.showCig) args.push("--cig");
   return args;
 }
 

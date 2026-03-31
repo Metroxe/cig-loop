@@ -80,6 +80,8 @@ export interface LoopConfig {
   timeoutSeconds: number;
   /** Per-bucket throttle thresholds (0 = disabled) */
   throttle: ThrottleConfig;
+  /** Show the smoking cigarette animation in the footer */
+  showCig: boolean;
 }
 
 /**

@@ -900,17 +900,16 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   // Handle Ctrl+C — triggers force-quit via daemon signals.
   // In auto-attach mode, the attach TUI handles Ctrl+C via the socket API,
   // so this only fires for bare daemon processes killed externally.
-  const cleanup = () => {
+  const cleanup = async () => {
     usagePoller?.stop();
     daemon.abortCurrentIteration();
     daemon.setStopReason("user interrupted (SIGINT)");
     daemon.setPhase("stopped");
-    daemon.persistState();
+    await daemon.persistState();
     footer.deactivate();
-    footer.closeLog();
-    daemon.shutdown();
-    // Don't process.exit — let the attach layer detect "stopped" and exit cleanly.
-    // For bare --daemon mode (no attach), the loop will break on isForceQuitRequested.
+    await footer.closeLog();
+    await daemon.shutdown();
+    process.exit(0);
   };
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);

@@ -57,7 +57,10 @@ async function cmdList(): Promise<void> {
       : `${run.iteration}/${run.totalIterations}`;
 
     console.log(`  ${chalk.cyan(run.id)}  ${phaseColor(run.phase.padEnd(10))}  ${iterLabel.padEnd(8)}  ${chalk.dim(run.promptPath)}`);
-    console.log(`  ${" ".repeat(6)}  pid ${run.pid}  ${chalk.dim(run.cwd)}`);
+    const stoppedLabel = run.stoppedAt
+      ? `  stopped ${new Date(run.stoppedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}  ${chalk.dim(run.stopReason || "")}`
+      : `  pid ${run.pid}`;
+    console.log(`  ${" ".repeat(6)}${stoppedLabel}  ${chalk.dim(run.cwd)}`);
     console.log("");
   }
 }
@@ -82,9 +85,12 @@ async function cmdHistory(): Promise<void> {
   const sessionChoice = await p.select({
     message: "Select a stopped session",
     options: stopped.map((run) => {
+      const stoppedTime = run.stoppedAt
+        ? new Date(run.stoppedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
+        : "?";
       const stoppedAgo = run.stoppedAt
         ? `${Math.round((Date.now() - new Date(run.stoppedAt).getTime()) / 60_000)}m ago`
-        : "?";
+        : "";
       const iterLabel = run.totalIterations === 0
         ? `${run.iteration}/∞`
         : `${run.iteration}/${run.totalIterations}`;
@@ -95,7 +101,7 @@ async function cmdHistory(): Promise<void> {
       return {
         value: run.id,
         label: `${run.id}  ${iterLabel.padEnd(8)} ${promptShort}`,
-        hint: `${run.stopReason || "no reason"} — stopped ${stoppedAgo}`,
+        hint: `${stoppedTime} (${stoppedAgo}) — ${run.stopReason || "no reason"}`,
       };
     }),
   });

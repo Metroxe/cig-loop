@@ -26,6 +26,8 @@ export async function runClientCommand(command: string, arg?: string): Promise<v
       return cmdLogs(arg);
     case "attach":
       return cmdAttach(arg);
+    case "history":
+      return cmdHistory();
     default:
       console.error(chalk.red(`Unknown command: ${command}`));
       process.exit(1);
@@ -55,6 +57,50 @@ async function cmdList(): Promise<void> {
 
     console.log(`  ${chalk.cyan(run.id)}  ${phaseColor(run.phase.padEnd(10))}  ${iterLabel.padEnd(8)}  ${chalk.dim(run.promptPath)}`);
     console.log(`  ${" ".repeat(6)}  pid ${run.pid}  ${chalk.dim(run.cwd)}`);
+    console.log("");
+  }
+}
+
+async function cmdHistory(): Promise<void> {
+  const runs = await listRuns();
+  const stopped = runs.filter((r) => !r.alive && r.stoppedAt);
+
+  if (stopped.length === 0) {
+    console.log(chalk.dim("No recently stopped sessions (history kept for 24h)."));
+    return;
+  }
+
+  // Sort by most recently stopped first
+  stopped.sort((a, b) => {
+    const ta = a.stoppedAt ? new Date(a.stoppedAt).getTime() : 0;
+    const tb = b.stoppedAt ? new Date(b.stoppedAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  console.log(chalk.bold("Recently stopped sessions:\n"));
+
+  for (const run of stopped) {
+    const stoppedAgo = run.stoppedAt
+      ? `${Math.round((Date.now() - new Date(run.stoppedAt).getTime()) / 60_000)}m ago`
+      : "?";
+
+    const iterLabel = run.totalIterations === 0
+      ? `${run.iteration}/∞`
+      : `${run.iteration}/${run.totalIterations}`;
+
+    console.log(`  ${chalk.cyan(run.id)}  ${chalk.red("stopped")}  ${iterLabel.padEnd(8)}  ${chalk.dim(run.promptPath)}`);
+    console.log(`  ${" ".repeat(6)}  stopped ${stoppedAgo}  ${chalk.dim(run.stopReason || "no reason")}`);
+    console.log(`  ${" ".repeat(6)}  ${chalk.dim(run.cwd)}`);
+    if (run.spawnArgs) {
+      console.log(`  ${" ".repeat(6)}  ${chalk.dim("rerun:")} cig-loop ${run.spawnArgs.join(" ")}`);
+      const remainingIters = run.totalIterations - run.iteration;
+      if (remainingIters > 0) {
+        const continueArgs = run.spawnArgs.map((a, i, arr) =>
+          arr[i - 1] === "-i" ? String(remainingIters) : a
+        );
+        console.log(`  ${" ".repeat(6)}  ${chalk.dim("continue:")} cig-loop ${continueArgs.join(" ")}`);
+      }
+    }
     console.log("");
   }
 }

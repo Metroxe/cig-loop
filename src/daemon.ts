@@ -6,6 +6,7 @@
  */
 
 import { mkdir, readdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { CumulativeStats, LiveIterationStats, LoopConfig, ThrottleConfig } from "./types.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -26,8 +27,11 @@ export interface DaemonState {
   cumulative: CumulativeStats;
   live: LiveIterationStats | null;
   stopReason?: string;
+  stoppedAt?: string;
   logFile?: string;
   throttleConfig?: ThrottleConfig | null;
+  /** Original CLI args for respawning (continue/rerun) */
+  spawnArgs?: string[];
 }
 
 // ─── ID Generation ──────────────────────────────────────────────────────
@@ -67,7 +71,7 @@ export class DaemonController {
       pid: process.pid,
       startedAt: new Date().toISOString(),
       cwd: process.cwd(),
-      promptPath: config.promptPath,
+      promptPath: resolve(config.promptPath),
       phase: "starting",
       iteration: 0,
       totalIterations: config.iterations,
@@ -220,6 +224,9 @@ export class DaemonController {
     this.state.throttleConfig = config;
   }
 
+  setSpawnArgs(args: string[]): void {
+    this.state.spawnArgs = args;
+  }
 
   private async getLogTail(lines: number): Promise<Response> {
     const logFile = this.logFilePath_;
@@ -237,6 +244,9 @@ export class DaemonController {
 
   setPhase(phase: DaemonState["phase"]): void {
     this.state.phase = phase;
+    if (phase === "stopped") {
+      this.state.stoppedAt = new Date().toISOString();
+    }
   }
 
   setIteration(iteration: number): void {
@@ -289,11 +299,18 @@ export interface RunInfo {
   iteration: number;
   totalIterations: number;
   startedAt: string;
+  stoppedAt?: string;
+  stopReason?: string;
   socketPath: string;
+  spawnArgs?: string[];
 }
 
+const HISTORY_TTL_MS = 24 * 60 * 60 * 1000; // keep stopped sessions for 24h
+
 /**
- * List all daemon run directories, checking which are still alive.
+ * List all daemon run directories, including recently stopped sessions.
+ * Dead sessions are kept for 24h so the autopilot monitor can detect
+ * sessions that stopped since its last check.
  */
 export async function listRuns(): Promise<RunInfo[]> {
   const runs: RunInfo[] = [];
@@ -318,10 +335,18 @@ export async function listRuns(): Promise<RunInfo[]> {
           alive = false;
         }
 
-        // Clean up stale run directories
+        // Clean up sessions that have been dead for > 24h
         if (!alive) {
-          try { await rm(runDir, { recursive: true }); } catch {}
-          continue;
+          const stoppedAt = state.stoppedAt ? new Date(state.stoppedAt).getTime() : 0;
+          if (stoppedAt > 0 && Date.now() - stoppedAt > HISTORY_TTL_MS) {
+            try { await rm(runDir, { recursive: true }); } catch {}
+            continue;
+          }
+          // No stoppedAt means old-format state — clean up immediately
+          if (!stoppedAt) {
+            try { await rm(runDir, { recursive: true }); } catch {}
+            continue;
+          }
         }
 
         runs.push({
@@ -334,7 +359,10 @@ export async function listRuns(): Promise<RunInfo[]> {
           iteration: state.iteration || 0,
           totalIterations: state.totalIterations || 0,
           startedAt: state.startedAt || "?",
+          stoppedAt: state.stoppedAt,
+          stopReason: state.stopReason,
           socketPath: `${runDir}/control.sock`,
+          spawnArgs: state.spawnArgs,
         });
       } catch {
         // Skip malformed entries

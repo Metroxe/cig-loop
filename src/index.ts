@@ -34,7 +34,7 @@ if (process.argv[2] === "update") {
   process.exit(0);
 }
 
-if (["list", "status", "stop", "logs", "pause", "resume", "attach"].includes(process.argv[2] || "")) {
+if (["list", "status", "stop", "logs", "pause", "resume", "attach", "history"].includes(process.argv[2] || "")) {
   const { runClientCommand } = await import("./daemon-cli.js");
   await runClientCommand(process.argv[2] as string, process.argv[3]);
   process.exit(0);
@@ -1319,6 +1319,7 @@ async function main(): Promise<void> {
 
     const daemon = new DaemonController(config);
     daemon.setLogFile(config.logFile!);
+    daemon.setSpawnArgs(buildConfigArgs(config));
     await daemon.start();
     await daemon.persistState();
 
@@ -1372,13 +1373,11 @@ async function main(): Promise<void> {
  * Spawn a detached child process running the loop in daemon mode.
  * Returns the child process handle.
  */
-function spawnDaemonChild(config: LoopConfig) {
+/** Build CLI args from a LoopConfig (without --daemon/--no-interactive). */
+function buildConfigArgs(config: LoopConfig): string[] {
   const args: string[] = [];
-
   args.push("-p", config.promptPath);
   args.push("-i", String(config.iterations));
-  args.push("--daemon");
-  args.push("--no-interactive");
 
   if (config.model) args.push("-m", config.model);
   if (config.stopString) args.push("--stop-string", config.stopString);
@@ -1404,6 +1403,11 @@ function spawnDaemonChild(config: LoopConfig) {
 
   if (config.enableIde) args.push("--ide");
   if (config.enableChrome) args.push("--chrome");
+  return args;
+}
+
+function spawnDaemonChild(config: LoopConfig) {
+  const args = [...buildConfigArgs(config), "--daemon", "--no-interactive"];
 
   // Use process.execPath so this works both in dev (bun src/index.ts)
   // and as a compiled binary (cig-loop). For compiled binaries, argv[0]

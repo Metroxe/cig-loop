@@ -5,6 +5,7 @@
  */
 
 import chalk from "chalk";
+import * as p from "@clack/prompts";
 import { listRuns, findRun, daemonRequest, type RunInfo } from "./daemon.js";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
 import { StickyFooter, type ControlAction } from "./terminal.js";
@@ -77,32 +78,110 @@ async function cmdHistory(): Promise<void> {
     return tb - ta;
   });
 
-  console.log(chalk.bold("Recently stopped sessions:\n"));
+  // Pick a session
+  const sessionChoice = await p.select({
+    message: "Select a stopped session",
+    options: stopped.map((run) => {
+      const stoppedAgo = run.stoppedAt
+        ? `${Math.round((Date.now() - new Date(run.stoppedAt).getTime()) / 60_000)}m ago`
+        : "?";
+      const iterLabel = run.totalIterations === 0
+        ? `${run.iteration}/∞`
+        : `${run.iteration}/${run.totalIterations}`;
+      const promptShort = run.promptPath.length > 40
+        ? "…" + run.promptPath.slice(-39)
+        : run.promptPath;
 
-  for (const run of stopped) {
-    const stoppedAgo = run.stoppedAt
-      ? `${Math.round((Date.now() - new Date(run.stoppedAt).getTime()) / 60_000)}m ago`
-      : "?";
+      return {
+        value: run.id,
+        label: `${run.id}  ${iterLabel.padEnd(8)} ${promptShort}`,
+        hint: `${run.stopReason || "no reason"} — stopped ${stoppedAgo}`,
+      };
+    }),
+  });
+  if (p.isCancel(sessionChoice)) return;
 
-    const iterLabel = run.totalIterations === 0
-      ? `${run.iteration}/∞`
-      : `${run.iteration}/${run.totalIterations}`;
+  const run = stopped.find((r) => r.id === sessionChoice)!;
 
-    console.log(`  ${chalk.cyan(run.id)}  ${chalk.red("stopped")}  ${iterLabel.padEnd(8)}  ${chalk.dim(run.promptPath)}`);
-    console.log(`  ${" ".repeat(6)}  stopped ${stoppedAgo}  ${chalk.dim(run.stopReason || "no reason")}`);
-    console.log(`  ${" ".repeat(6)}  ${chalk.dim(run.cwd)}`);
-    if (run.spawnArgs) {
-      console.log(`  ${" ".repeat(6)}  ${chalk.dim("rerun:")} cig-loop ${run.spawnArgs.join(" ")}`);
-      const remainingIters = run.totalIterations - run.iteration;
-      if (remainingIters > 0) {
-        const continueArgs = run.spawnArgs.map((a, i, arr) =>
-          arr[i - 1] === "-i" ? String(remainingIters) : a
-        );
-        console.log(`  ${" ".repeat(6)}  ${chalk.dim("continue:")} cig-loop ${continueArgs.join(" ")}`);
-      }
+  if (!run.spawnArgs) {
+    console.log(chalk.red("This session doesn't have saved spawn args — can't rerun or continue."));
+    console.log(chalk.dim("Only sessions started after this feature was added can be restarted."));
+    return;
+  }
+
+  // Build action options
+  const remainingIters = run.totalIterations - run.iteration;
+  const actions: { value: string; label: string; hint: string }[] = [];
+
+  if (remainingIters > 0) {
+    const continueArgs = run.spawnArgs.map((a, i, arr) =>
+      arr[i - 1] === "-i" ? String(remainingIters) : a
+    );
+    actions.push({
+      value: "continue",
+      label: `Continue (${remainingIters} remaining iterations)`,
+      hint: `cig-loop ${continueArgs.join(" ")}`,
+    });
+  }
+
+  actions.push({
+    value: "rerun",
+    label: `Rerun (${run.totalIterations} iterations from scratch)`,
+    hint: `cig-loop ${run.spawnArgs.join(" ")}`,
+  });
+
+  actions.push({ value: "copy", label: "Show commands (copy/paste)", hint: "" });
+  actions.push({ value: "cancel", label: "Cancel", hint: "" });
+
+  const actionChoice = await p.select({
+    message: `What to do with ${run.id}?`,
+    options: actions,
+  });
+  if (p.isCancel(actionChoice) || actionChoice === "cancel") return;
+
+  if (actionChoice === "copy") {
+    console.log("");
+    console.log(chalk.bold("Commands:"));
+    console.log(`  ${chalk.dim("rerun:")}    cig-loop ${run.spawnArgs.join(" ")}`);
+    if (remainingIters > 0) {
+      const continueArgs = run.spawnArgs.map((a, i, arr) =>
+        arr[i - 1] === "-i" ? String(remainingIters) : a
+      );
+      console.log(`  ${chalk.dim("continue:")} cig-loop ${continueArgs.join(" ")}`);
     }
     console.log("");
+    return;
   }
+
+  // Build the args for the chosen action
+  let args: string[];
+  if (actionChoice === "continue" && remainingIters > 0) {
+    args = run.spawnArgs.map((a, i, arr) =>
+      arr[i - 1] === "-i" ? String(remainingIters) : a
+    );
+  } else {
+    args = [...run.spawnArgs];
+  }
+
+  // Spawn it in the session's original CWD
+  console.log("");
+  console.log(chalk.cyan(`Launching: cig-loop ${args.join(" ")}`));
+  console.log(chalk.dim(`CWD: ${run.cwd}`));
+  console.log("");
+
+  const isBundled = !process.argv[1]?.endsWith(".ts");
+  const cmd = isBundled
+    ? [process.execPath, ...args]
+    : [process.execPath, process.argv[1]!, ...args];
+
+  // Replace this process with the new cig-loop
+  const proc = Bun.spawn(cmd, {
+    cwd: run.cwd,
+    stdio: ["inherit", "inherit", "inherit"],
+    env: process.env,
+  });
+  const exitCode = await proc.exited;
+  process.exit(exitCode);
 }
 
 async function cmdStatus(idPrefix?: string): Promise<void> {

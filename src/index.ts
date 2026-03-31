@@ -19,6 +19,7 @@ import { VERSION, checkForUpdate } from "./version.js";
 import { resolve } from "node:path";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS } from "./usage.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
@@ -889,18 +890,21 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   // Poller reference — set after activate(), used by cleanup handlers.
   let usagePoller: UsagePoller | null = null;
 
-  // Ensure terminal is restored on any exit path (crash, uncaught exception, etc.)
-  // This is a safety net — deactivate() is idempotent so double-calls are fine.
+  // Ensure terminal is restored on any exit path.
   const emergencyCleanup = () => {
     usagePoller?.stop();
     footer.deactivate();
   };
   process.on("exit", emergencyCleanup);
 
+
   // Handle Ctrl+C — triggers force-quit via daemon signals.
   // In auto-attach mode, the attach TUI handles Ctrl+C via the socket API,
   // so this only fires for bare daemon processes killed externally.
+  let cleaningUp = false;
   const cleanup = async () => {
+    if (cleaningUp) return;
+    cleaningUp = true;
     usagePoller?.stop();
     daemon.abortCurrentIteration();
     daemon.setStopReason("user interrupted (SIGINT)");
@@ -914,17 +918,11 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  // Handle uncaught errors
+  // Handle uncaught errors — use the same cleanup with guard
   const crashCleanup = (err: unknown) => {
-    usagePoller?.stop();
-    daemon.abortCurrentIteration();
-    footer.deactivate();
     const errMsg = err instanceof Error ? err.message : String(err);
     daemon.setStopReason(`fatal error: ${errMsg}`);
-    daemon.setPhase("stopped");
-    footer.closeLog();
-    daemon.shutdown();
-    process.exit(1);
+    cleanup();
   };
   process.on("uncaughtException", crashCleanup);
   process.on("unhandledRejection", crashCleanup);

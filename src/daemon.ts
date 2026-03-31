@@ -5,13 +5,15 @@
  * State is persisted to ~/.cig-loop/runs/<id>/ for discovery by client commands.
  */
 
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { CumulativeStats, LiveIterationStats, LoopConfig, ThrottleConfig } from "./types.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const RUNS_DIR = `${process.env.HOME}/.cig-loop/runs`;
+const HISTORY_FILE = `${process.env.HOME}/.cig-loop/history.jsonl`;
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -64,7 +66,9 @@ export class DaemonController {
   constructor(config: LoopConfig) {
     this.id = generateId();
     this.runDir = `${RUNS_DIR}/${this.id}`;
-    this.socketPath = `${this.runDir}/control.sock`;
+    // Socket lives in /tmp — Bun.serve auto-deletes the unix socket's
+    // parent directory on process exit, which would destroy run state.
+    this.socketPath = `/tmp/cig-loop-${this.id}.sock`;
 
     this.state = {
       id: this.id,
@@ -84,6 +88,17 @@ export class DaemonController {
       },
       live: null,
     };
+  }
+
+  getState(): DaemonState { return this.state; }
+
+  /** Append this session to the history JSONL file (survives Bun's cleanup). */
+  appendHistory(): void {
+    try {
+      const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+      mkdirSync(`${process.env.HOME}/.cig-loop`, { recursive: true });
+      appendFileSync(HISTORY_FILE, JSON.stringify(this.state) + "\n");
+    } catch { /* best effort */ }
   }
 
   get isPauseRequested(): boolean {
@@ -124,17 +139,17 @@ export class DaemonController {
   }
 
   async start(): Promise<void> {
-    await mkdir(this.runDir, { recursive: true });
+    // Create run directory and files via shell subprocess — Bun auto-deletes
+    // files/directories it creates (via Bun.write, mkdir, writeFileSync) on
+    // process exit, which destroys the session history we need.
+    await Bun.$`mkdir -p ${this.runDir}`.quiet();
+    await Bun.$`echo ${String(process.pid)} > ${this.runDir}/pid`.quiet();
 
-    // Write PID file
-    await Bun.write(`${this.runDir}/pid`, String(process.pid));
-
-    // Write CWD symlink for easy identification
+    // Write CWD symlink for easy identification (via shell to avoid Bun auto-cleanup)
     try {
-      const { symlink } = await import("node:fs/promises");
-      await symlink(process.cwd(), `${this.runDir}/cwd`);
+      await Bun.$`ln -sf ${process.cwd()} ${this.runDir}/cwd`.quiet();
     } catch {
-      // Symlink may fail on some systems, non-critical
+      // Non-critical
     }
 
     // Start Unix socket server
@@ -266,7 +281,9 @@ export class DaemonController {
   }
 
   async persistState(): Promise<void> {
-    await Bun.write(`${this.runDir}/state.json`, JSON.stringify(this.state, null, 2));
+    // Write via shell — Bun auto-deletes files it creates on process exit
+    const json = JSON.stringify(this.state, null, 2);
+    await Bun.$`echo ${json} > ${this.runDir}/state.json`.quiet();
   }
 
   async shutdown(): Promise<void> {
@@ -275,6 +292,7 @@ export class DaemonController {
       this.state.stoppedAt = new Date().toISOString();
     }
     await this.persistState();
+    this.appendHistory();
 
     if (this.server) {
       this.server.stop(true);
@@ -283,13 +301,7 @@ export class DaemonController {
 
     // Don't delete the run directory — keep it for history (24h TTL).
     // listRuns() handles cleanup of expired entries.
-    // Just remove the socket file since the server is stopped.
-    try {
-      const { unlink } = await import("node:fs/promises");
-      await unlink(this.socketPath);
-    } catch {
-      // Best effort
-    }
+    // Socket file is left behind (harmless).
   }
 }
 
@@ -367,7 +379,7 @@ export async function listRuns(): Promise<RunInfo[]> {
           startedAt: state.startedAt || "?",
           stoppedAt: state.stoppedAt,
           stopReason: state.stopReason,
-          socketPath: `${runDir}/control.sock`,
+          socketPath: `/tmp/cig-loop-${entry}.sock`,
           spawnArgs: state.spawnArgs,
         });
       } catch {
@@ -377,6 +389,39 @@ export async function listRuns(): Promise<RunInfo[]> {
   } catch {
     // Runs dir doesn't exist yet
   }
+
+  // Also load stopped sessions from history JSONL
+  try {
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    const content = readFileSync(HISTORY_FILE, "utf-8");
+    const seenIds = new Set(runs.map((r) => r.id));
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const state = JSON.parse(line);
+        if (seenIds.has(state.id)) continue; // already in runs (still alive)
+        if (!state.stoppedAt) continue;
+        const stoppedAt = new Date(state.stoppedAt).getTime();
+        if (Date.now() - stoppedAt > HISTORY_TTL_MS) continue; // expired
+        runs.push({
+          id: state.id,
+          pid: state.pid,
+          alive: false,
+          cwd: state.cwd || "?",
+          promptPath: state.promptPath || "?",
+          phase: state.phase || "stopped",
+          iteration: state.iteration || 0,
+          totalIterations: state.totalIterations || 0,
+          startedAt: state.startedAt || "?",
+          stoppedAt: state.stoppedAt,
+          stopReason: state.stopReason,
+          socketPath: "",
+          spawnArgs: state.spawnArgs,
+        });
+        seenIds.add(state.id);
+      } catch { /* skip malformed lines */ }
+    }
+  } catch { /* history file doesn't exist yet */ }
 
   return runs;
 }

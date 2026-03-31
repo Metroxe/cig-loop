@@ -16,6 +16,7 @@ import { formatCost, formatDuration, formatNumber } from "./format.js";
 import { StickyFooter } from "./terminal.js";
 import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
 import { VERSION, checkForUpdate } from "./version.js";
+import { resolve } from "node:path";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
 import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS } from "./usage.js";
@@ -475,7 +476,7 @@ async function gatherConfig(): Promise<LoopConfig> {
   let selectedMcps: InjectableMcp[] = [];
 
   // Load injectable MCPs from mcps.json (custom user-defined ones)
-  const promptPath = (core.promptPath as string).trim();
+  const promptPath = resolve((core.promptPath as string).trim());
   const customInjectables = await loadInjectableMcps(opts.mcpInject, promptPath);
 
   p.note(
@@ -746,7 +747,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
   }
 
   // Also load injectable MCPs from mcps.json if --mcp-inject is set
-  const promptPath = opts.prompt || "./PROMPT.md";
+  const promptPath = resolve(opts.prompt || "./PROMPT.md");
   const customInjectables = await loadInjectableMcps(opts.mcpInject, promptPath);
   if (opts.mcpInject || mcpFlag !== "none") {
     for (const custom of customInjectables) {
@@ -1018,17 +1019,21 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
           chalk.yellow(`\u23f8 Throttled: ${hit.bucket} at ${hit.utilization}% (limit: ${hit.threshold}%). Resuming at ${catchupDate} (~${waitMin}m). Checking disk every 30s.`)
         );
 
-        // Wait, but check disk cache every 30s in case the cron updates it
+        // Wait, but check disk cache every 30s in case the cron updates it.
+        // Also check for stop/quit signals so the daemon can exit cleanly.
         const deadline = Date.now() + waitMs;
+        let throttleCleared = false;
         while (Date.now() < deadline) {
           await Bun.sleep(30_000);
+          if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
           // Disk cache may have been updated by the usage-updater cron
           const freshUsage = usagePoller.usage;
           if (freshUsage) {
             const freshHit = checkThrottle(freshUsage, config.model, config.throttle);
-            if (!freshHit) break; // cleared!
+            if (!freshHit) { throttleCleared = true; break; }
           }
         }
+        if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
 
         // Refresh from API now that we should be clear
         await usagePoller.refresh();

@@ -450,6 +450,9 @@ function Footer({
 
     line1 = ` ${iterLabel} ${bar}`;
     line2 = ` ▸ Current:  ${formatDuration(elapsed)} │ ${formatNumber(liveStats.inputTokens)} in / ${formatNumber(liveStats.outputTokens)} out │ ${Math.round(liveStats.contextPercent)}% context`;
+  } else if (phase === "throttled") {
+    line1 = " ⏸ Throttled — waiting for usage to drop below threshold";
+    line2 = "";
   } else {
     line1 = " Waiting...";
     line2 = "";

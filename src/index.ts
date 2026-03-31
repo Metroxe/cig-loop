@@ -936,7 +936,8 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
   usagePoller = new UsagePoller();
   usagePoller.onUsage = (usage) => footer.setUsage(usage);
   usagePoller.onError = (error) => footer.setUsageFetchError(error);
-  await usagePoller.start();
+  const hasThrottleConfig = config.throttle.dynamic || config.throttle.fiveHour > 0 || config.throttle.sevenDay > 0 || config.throttle.sonnet > 0;
+  await usagePoller.start(hasThrottleConfig);
 
   // Hook live stats into daemon state
   footer.onLiveStats = (stats) => daemon.setLive(stats);
@@ -993,6 +994,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
         }
 
         daemon.setPhase("throttled");
+        await daemon.persistState();
 
         // Calculate when the dynamic threshold will catch up to current utilization
         const periodMs = hit.bucket === "5h" ? BUCKET_PERIOD_MS.fiveHour : BUCKET_PERIOD_MS.sevenDay;

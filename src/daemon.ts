@@ -271,6 +271,9 @@ export class DaemonController {
 
   async shutdown(): Promise<void> {
     this.state.phase = "stopped";
+    if (!this.state.stoppedAt) {
+      this.state.stoppedAt = new Date().toISOString();
+    }
     await this.persistState();
 
     if (this.server) {
@@ -278,9 +281,12 @@ export class DaemonController {
       this.server = null;
     }
 
-    // Clean up run directory
+    // Don't delete the run directory — keep it for history (24h TTL).
+    // listRuns() handles cleanup of expired entries.
+    // Just remove the socket file since the server is stopped.
     try {
-      await rm(this.runDir, { recursive: true });
+      const { unlink } = await import("node:fs/promises");
+      await unlink(this.socketPath);
     } catch {
       // Best effort
     }

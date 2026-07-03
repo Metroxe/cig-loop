@@ -127,6 +127,7 @@ export async function runClaudeIteration(
     appendOutput: (text: string) => { output += text; },
     hasStreamedContent: false,
     lastTextBlock: "",
+    requestedWakeupSeconds: undefined,
   };
 
   // Read stdout line by line
@@ -254,6 +255,7 @@ export async function runClaudeIteration(
     continueStringDetected,
     timedOut,
     finalResponse: finalText,
+    requestedWakeupSeconds: state.requestedWakeupSeconds,
   };
 }
 
@@ -267,6 +269,27 @@ interface ProcessingState {
   hasStreamedContent: boolean;
   /** Content of the most recent text block (reset on each new text block start) */
   lastTextBlock: string;
+  /** Seconds requested by the agent's most recent ScheduleWakeup call, if any */
+  requestedWakeupSeconds?: number;
+}
+
+/**
+ * Extract a ScheduleWakeup delay (in seconds) from a tool_use.
+ * Returns undefined if this isn't a ScheduleWakeup call or the delay is unusable.
+ * Handles both accumulated-string input (streaming) and object input (fallback).
+ */
+function parseWakeupSeconds(toolName: string | undefined, input: unknown): number | undefined {
+  if (toolName !== "ScheduleWakeup") return undefined;
+  let obj: Record<string, unknown> | undefined;
+  if (typeof input === "string") {
+    try { obj = JSON.parse(input || "{}"); } catch { return undefined; }
+  } else if (input && typeof input === "object") {
+    obj = input as Record<string, unknown>;
+  }
+  const raw = obj?.delaySeconds;
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? parseFloat(raw) : NaN;
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
 }
 
 async function processEvent(
@@ -503,6 +526,8 @@ function handleBlockStop(
       const description = formatToolUse(block.name || "tool", block.input || "{}");
       const icon = getToolIcon(block.name || "tool");
       footer.writeln(`${icon} ${chalk.cyan(description)}`);
+      const wakeup = parseWakeupSeconds(block.name, block.input);
+      if (wakeup !== undefined) state.requestedWakeupSeconds = wakeup;
       break;
     }
 
@@ -565,6 +590,8 @@ function handleAssistantMessage(
       );
       const icon = getToolIcon(block.name as string);
       footer.writeln(`${icon} ${chalk.cyan(description)}`);
+      const wakeup = parseWakeupSeconds(block.name as string, block.input);
+      if (wakeup !== undefined) state.requestedWakeupSeconds = wakeup;
     } else if (blockType === "tool_result" && block.content) {
       const preview = formatToolResult(block.content);
       if (preview) footer.writeln(preview);

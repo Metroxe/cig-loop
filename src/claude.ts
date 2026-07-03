@@ -53,6 +53,11 @@ export async function runClaudeIteration(
     args.push("--model", config.model);
   }
 
+  // Reasoning effort. Omitted when unset so the model's own default applies.
+  if (config.effort) {
+    args.push("--effort", config.effort);
+  }
+
   // IMPORTANT: prompt must come BEFORE --mcp-config because --mcp-config
   // is variadic (accepts multiple values) and would consume the prompt text
   args.push(promptContent);

@@ -81,6 +81,7 @@ const program = new Command()
   .option("-p, --prompt <path>", "path to prompt file", "./PROMPT.md")
   .option("-i, --iterations <number>", "number of iterations (0 = infinite)", "10")
   .option("-m, --model <model>", "Claude model to use")
+  .option("-e, --effort <level>", "reasoning effort: low|medium|high|xhigh|max (default: the model's own default)")
   .option("--stop-string <string>", "stop loop when this string is detected in output")
   .option("--continue-string <string>", "continue only if this string is detected in output")
   .option("--log-file <path>", "log all output to this file")
@@ -440,6 +441,19 @@ async function gatherConfig(): Promise<LoopConfig> {
           ],
           initialValue: opts.model || "",
         }),
+      effort: () =>
+        p.select({
+          message: "Reasoning effort",
+          options: [
+            { value: "", label: "Default (the model's own default)" },
+            { value: "low", label: "low" },
+            { value: "medium", label: "medium" },
+            { value: "high", label: "high" },
+            { value: "xhigh", label: "xhigh" },
+            { value: "max", label: "max" },
+          ],
+          initialValue: opts.effort || "",
+        }),
       stopString: () =>
         p.text({
           message: "Stop string (leave empty to skip)",
@@ -701,6 +715,7 @@ async function gatherConfig(): Promise<LoopConfig> {
     promptPath,
     iterations: parseInt(core.iterations as string, 10),
     model: (core.model as string) || undefined,
+    effort: (core.effort as string) || undefined,
     stopString: (core.stopString as string).trim() || undefined,
     continueString: (core.continueString as string).trim() || undefined,
     logFile: (core.logFile as string).trim() || undefined,
@@ -764,6 +779,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
     promptPath,
     iterations: parseInt(opts.iterations, 10) || 10,
     model: opts.model || undefined,
+    effort: opts.effort || undefined,
     stopString: opts.stopString || undefined,
     continueString: opts.continueString || undefined,
     logFile: opts.logFile || undefined,
@@ -791,6 +807,7 @@ function buildRerunCommand(config: LoopConfig): string {
 
   parts.push("-p", JSON.stringify(config.promptPath));
   if (config.model) parts.push("-m", config.model);
+  if (config.effort) parts.push("-e", config.effort);
   if (config.stopString) parts.push("--stop-string", JSON.stringify(config.stopString));
   if (config.continueString) parts.push("--continue-string", JSON.stringify(config.continueString));
   if (config.logFile) parts.push("--log-file", JSON.stringify(config.logFile));
@@ -1306,6 +1323,7 @@ async function main(): Promise<void> {
   console.log(`  Prompt:     ${config.promptPath}`);
   console.log(`  Iterations: ${config.iterations === 0 ? "infinite" : config.iterations}`);
   if (config.model) console.log(`  Model:      ${config.model}`);
+  if (config.effort) console.log(`  Effort:     ${config.effort}`);
   if (config.stopString) console.log(`  Stop:       "${config.stopString}"`);
   if (config.continueString) console.log(`  Continue:   "${config.continueString}"`);
   if (config.delaySeconds > 0) console.log(`  Delay:      ${config.delaySeconds}s between iterations`);
@@ -1409,6 +1427,7 @@ function buildConfigArgs(config: LoopConfig): string[] {
   args.push("-i", String(config.iterations));
 
   if (config.model) args.push("-m", config.model);
+  if (config.effort) args.push("-e", config.effort);
   if (config.stopString) args.push("--stop-string", config.stopString);
   if (config.continueString) args.push("--continue-string", config.continueString);
   if (config.logFile) args.push("--log-file", config.logFile);

@@ -65,6 +65,8 @@ export interface LoopConfig {
   iterations: number;
   /** Claude model to use (undefined = Claude default) */
   model?: string;
+  /** Reasoning effort level (low|medium|high|xhigh|max). Undefined = the model's own default. */
+  effort?: string;
   /** Stop the loop when this string is found in output */
   stopString?: string;
   /** Continue only if this string is found in output */

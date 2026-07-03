@@ -34,6 +34,13 @@ export interface IterationResult {
   timedOut: boolean;
   /** The content of the final text block (last text block before iteration ended) */
   finalResponse: string;
+  /**
+   * If the agent called ScheduleWakeup during this iteration, the requested
+   * delay in seconds. cig-loop is the re-invoker for headless `claude -p`, so
+   * this only takes effect if the loop waits this long before the next
+   * iteration (see the loop body in index.ts).
+   */
+  requestedWakeupSeconds?: number;
 }
 
 /**

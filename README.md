@@ -39,3 +39,20 @@ cig-loop update
 ```
 
 Self-updates the binary in place.
+
+## ScheduleWakeup pacing
+
+cig-loop is the re-invoker for headless `claude -p`: each iteration is a fresh
+one-shot process, and the loop starts the next as soon as the last returns.
+
+`ScheduleWakeup` is a harness tool that means "re-invoke me in N seconds." An
+interactive Claude Code session honors that; under `claude -p` there is no such
+harness, so **cig-loop honors it instead** — if the agent calls `ScheduleWakeup`
+during an iteration, the loop waits before the next one. The effective wait is
+the greater of the fixed `--delay` floor and the agent's requested `delaySeconds`
+(clamped to `[1s, 1h]`): the agent can pace itself *slower* than the floor (e.g.
+"poll CI again in 20 min") but never faster.
+
+Without this, an agent that means "wait 20 minutes" gets re-invoked back-to-back
+in seconds — wasted iterations, tokens, and CI load. Agents that never call
+`ScheduleWakeup` are unaffected; only `--delay` applies.

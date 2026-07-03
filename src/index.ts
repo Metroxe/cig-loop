@@ -1191,10 +1191,20 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     // Trim log if over the line limit
     await footer.flushAndTrimLog();
 
-    // Delay between iterations (skip after last iteration)
-    if (config.delaySeconds > 0 && i < maxIterations) {
-      footer.writeln(chalk.dim(`  Waiting ${config.delaySeconds}s before next iteration...`));
-      await Bun.sleep(config.delaySeconds * 1000);
+    // Delay between iterations (skip after last iteration).
+    // Effective wait = the greater of the operator's fixed --delay floor and any
+    // ScheduleWakeup delay the agent requested this iteration (clamped [1s, 1h]).
+    // cig-loop is the re-invoker for headless `claude -p`, so ScheduleWakeup is a
+    // no-op unless we honor it here; the agent can ask to wait LONGER than the
+    // floor (e.g. "poll CI again in 20 min") but never shorter.
+    const requestedWait = result.requestedWakeupSeconds
+      ? Math.min(3600, Math.max(1, Math.round(result.requestedWakeupSeconds)))
+      : 0;
+    const waitSeconds = Math.max(config.delaySeconds, requestedWait);
+    if (waitSeconds > 0 && i < maxIterations) {
+      const reason = requestedWait >= config.delaySeconds && requestedWait > 0 ? "ScheduleWakeup" : "delay";
+      footer.writeln(chalk.dim(`  Waiting ${waitSeconds}s before next iteration (${reason})...`));
+      await Bun.sleep(waitSeconds * 1000);
     }
   }
 

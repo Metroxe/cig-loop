@@ -13,11 +13,26 @@ import { StickyFooter } from "./terminal.js";
 import type {
   InjectableMcp,
   IterationResult,
+  LeakedProcess,
   LiveIterationStats,
   LoopConfig,
   StreamingBlock,
   TokenUsage,
 } from "./types.js";
+
+/**
+ * Absolute path to `setsid` on Linux (util-linux), or null elsewhere / if
+ * missing. When present we run each Claude iteration inside its own session
+ * (`setsid claude …`) so `proc.pid` becomes the session-leader whose session id
+ * (SID) equals its pid. Every descendant — even one detached with
+ * `nohup … & disown` — inherits that SID and stays enumerable after the leader
+ * exits and its children reparent to init. That's what lets us find (and reap)
+ * background processes an iteration leaks. `setsid` doesn't fork here (a
+ * Bun-spawned child isn't a process-group leader), so it execs straight into
+ * claude: pid == SID, and claude's real exit code propagates unchanged.
+ */
+const SETSID_PATH: string | null =
+  process.platform === "linux" ? Bun.which("setsid") : null;
 
 /**
  * Run a single Claude iteration. Reads the prompt file, spawns the Claude
@@ -90,17 +105,23 @@ export async function runClaudeIteration(
 
   footer.writeln(chalk.dim("  ◆ Starting Claude..."));
 
-  // Spawn claude process (stdin must not inherit, otherwise claude may block waiting for input)
-  const proc = Bun.spawn(["claude", ...args], {
+  // Spawn claude process (stdin must not inherit, otherwise claude may block waiting for input).
+  // Under `setsid` when available so the whole iteration is one session we can
+  // enumerate + reap afterwards (see SETSID_PATH / detectAndReapLeaks).
+  const spawnCmd = SETSID_PATH ? [SETSID_PATH, "claude", ...args] : ["claude", ...args];
+  const proc = Bun.spawn(spawnCmd, {
     cwd: process.cwd(),
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
   });
+  // With setsid, proc.pid IS the session id shared by every descendant.
+  const sessionId = SETSID_PATH ? proc.pid ?? null : null;
 
-  // Kill the subprocess if the caller aborts (e.g. Ctrl+C)
+  // Kill the subprocess if the caller aborts (e.g. Ctrl+C). Kill the whole
+  // session when we have one, so backgrounded children die with the leader.
   if (signal) {
-    const onAbort = () => proc.kill("SIGTERM");
+    const onAbort = () => killIterationProcesses(proc, sessionId);
     signal.addEventListener("abort", onAbort, { once: true });
     proc.exited.then(() => signal.removeEventListener("abort", onAbort));
   }
@@ -112,7 +133,7 @@ export async function runClaudeIteration(
     timeoutTimer = setTimeout(async () => {
       timedOut = true;
       footer.writeln(chalk.yellow(`  ⏱ Timeout: iteration exceeded ${config.timeoutSeconds}s - killing process tree`));
-      await killProcessTree(proc.pid!, proc);
+      await killIterationProcesses(proc, sessionId);
     }, config.timeoutSeconds * 1000);
     // Clear the timer if the process exits naturally
     proc.exited.then(() => clearTimeout(timeoutTimer));
@@ -236,6 +257,10 @@ export async function runClaudeIteration(
   const exitCode = await proc.exited;
   const durationMs = Date.now() - startTime;
 
+  // The Claude session has ended. Detect + reap any background processes it
+  // left running — the "background-it-and-yield" footgun (see LeakedProcess).
+  const leakedProcesses = sessionId != null ? await detectAndReapLeaks(sessionId, proc.pid) : [];
+
   // Clean up temp debug file
   try { await Bun.file(debugFile).exists() && Bun.$`rm -f ${debugFile}`.quiet(); } catch { /* ignore */ }
 
@@ -261,6 +286,7 @@ export async function runClaudeIteration(
     timedOut,
     finalResponse: finalText,
     requestedWakeupSeconds: state.requestedWakeupSeconds,
+    leakedProcesses,
   };
 }
 
@@ -670,27 +696,78 @@ function handleResult(
 // ─── Process Tree Cleanup ──────────────────────────────────────────────
 
 /**
- * Kill a process and all its children. Sends SIGTERM first, waits 5s,
- * then SIGKILL to force-kill survivors.
+ * Kill the whole iteration — the Claude process and every descendant — on
+ * abort or timeout. Sends SIGTERM first, waits 5s, then SIGKILL to survivors.
+ *
+ * When we have a `sessionId` (setsid path) we signal the entire session
+ * (`pkill -s`), which reaches grandchildren and detached jobs that `pkill -P`
+ * (direct children only) would miss. Otherwise we fall back to the leader +
+ * its direct children.
  */
-async function killProcessTree(pid: number, proc: ReturnType<typeof Bun.spawn>): Promise<void> {
+async function killIterationProcesses(
+  proc: ReturnType<typeof Bun.spawn>,
+  sessionId: number | null,
+): Promise<void> {
+  const pid = proc.pid;
   try {
-    // Kill all children first (recursive via pkill -P)
-    await Bun.$`pkill -TERM -P ${pid}`.quiet().nothrow();
+    if (sessionId != null) await Bun.$`pkill -TERM -s ${sessionId}`.quiet().nothrow();
+    else if (pid != null) await Bun.$`pkill -TERM -P ${pid}`.quiet().nothrow();
   } catch { /* ignore */ }
-  try {
-    proc.kill("SIGTERM");
-  } catch { /* ignore */ }
+  try { proc.kill("SIGTERM"); } catch { /* ignore */ }
 
   // Grace period, then force-kill
   await Bun.sleep(5000);
 
   try {
-    await Bun.$`pkill -9 -P ${pid}`.quiet().nothrow();
+    if (sessionId != null) await Bun.$`pkill -KILL -s ${sessionId}`.quiet().nothrow();
+    else if (pid != null) await Bun.$`pkill -9 -P ${pid}`.quiet().nothrow();
   } catch { /* ignore */ }
+  try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+}
+
+/**
+ * After a Claude iteration's session leader has exited, find any processes
+ * still alive in that session — background jobs the agent launched and left
+ * running — then reap them so they don't accumulate across iterations (leaked
+ * Chromium / dev servers / bench workers will OOM the box otherwise).
+ *
+ * Returns the list of what was found (for loud reporting by the caller). The
+ * leader pid is excluded (it already exited). Best-effort and defensive: any
+ * failure yields an empty list rather than disrupting the loop.
+ */
+async function detectAndReapLeaks(
+  sessionId: number,
+  leaderPid: number | null,
+): Promise<LeakedProcess[]> {
+  let psOut = "";
   try {
-    proc.kill("SIGKILL");
-  } catch { /* ignore */ }
+    psOut = await new Response(
+      Bun.spawn(["ps", "-eo", "pid=,sid=,args="], { stdout: "pipe", stderr: "ignore" }).stdout,
+    ).text();
+  } catch {
+    return [];
+  }
+
+  const leaked: LeakedProcess[] = [];
+  for (const line of psOut.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const sid = Number(m[2]);
+    if (sid !== sessionId) continue;
+    if (leaderPid != null && pid === leaderPid) continue; // the (exited) leader
+    const cmd = m[3] ?? "";
+    leaked.push({ pid, command: cmd.length > 160 ? cmd.slice(0, 157) + "…" : cmd });
+  }
+
+  if (leaked.length === 0) return [];
+
+  // Reap the whole session: SIGTERM, grace, SIGKILL survivors.
+  try { await Bun.$`pkill -TERM -s ${sessionId}`.quiet().nothrow(); } catch { /* ignore */ }
+  await Bun.sleep(3000);
+  try { await Bun.$`pkill -KILL -s ${sessionId}`.quiet().nothrow(); } catch { /* ignore */ }
+
+  return leaked;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

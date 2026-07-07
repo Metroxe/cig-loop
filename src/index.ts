@@ -1156,6 +1156,30 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
       footer.writeln("");
     }
 
+    // Loudly surface leaked background processes. A headless iteration is
+    // stateless and short-lived: any job the agent backgrounded and left
+    // running is orphaned the moment the iteration ends — it does NOT survive
+    // to the next one. We reaped them (see detectAndReapLeaks); flag it so the
+    // silent "background-it-and-yield" treadmill becomes visible. The fix is in
+    // the PROMPT: run long work in the FOREGROUND (block on it), or resume from
+    // durable state — never a live child process.
+    if (result.leakedProcesses && result.leakedProcesses.length > 0) {
+      footer.writeln(
+        chalk.bold.red(
+          `  ⚠ ${result.leakedProcesses.length} leaked background process(es) from iteration ${i} — reaped:`,
+        ),
+      );
+      for (const p of result.leakedProcesses) {
+        footer.writeln(chalk.red(`      [${p.pid}] ${p.command}`));
+      }
+      footer.writeln(
+        chalk.yellow(
+          `  A backgrounded job does not survive an iteration. Run long work in the foreground (block on it) or resume from durable state.`,
+        ),
+      );
+      footer.writeln("");
+    }
+
     // Sentinel detection
     if (config.stopString) {
       if (result.stopStringDetected) {

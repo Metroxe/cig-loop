@@ -41,6 +41,25 @@ export interface IterationResult {
    * iteration (see the loop body in index.ts).
    */
   requestedWakeupSeconds?: number;
+  /**
+   * Background/orphaned processes the agent left running when the iteration
+   * ended, detected + reaped after the Claude session exited (Linux only; see
+   * detectAndReapLeaks in claude.ts). Normally empty. A non-empty list is the
+   * "background-it-and-yield" footgun: the agent detached a job (a bench sweep,
+   * a dev server) expecting it to survive, but a headless iteration is
+   * stateless and short-lived, so the job would have been silently killed and
+   * re-launched from scratch next iteration — a treadmill. We surface it loudly
+   * instead. Anything that must outlive one iteration has to run in the
+   * FOREGROUND (block on it) or resume from durable state, never a live child.
+   */
+  leakedProcesses?: LeakedProcess[];
+}
+
+/** A background process found still alive after its iteration's Claude session exited. */
+export interface LeakedProcess {
+  pid: number;
+  /** The process command line, truncated for display. */
+  command: string;
 }
 
 /**

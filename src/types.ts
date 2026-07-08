@@ -110,6 +110,19 @@ export interface LoopConfig {
   throttle: ThrottleConfig;
   /** Show the smoking cigarette animation in the footer */
   showCig: boolean;
+  /**
+   * If set, also expose a READ-ONLY status server over TCP on this port
+   * (in addition to the always-on local unix control socket). Serves
+   * `GET /status`, `GET /log`, `GET /health`. Control verbs (stop/pause/skip)
+   * are never exposed over TCP. Undefined/0 = disabled. Intended for a LAN
+   * dashboard to poll a headless daemon's live state.
+   */
+  statusPort?: number;
+  /**
+   * If set, the TCP status server requires `Authorization: Bearer <token>`.
+   * Undefined = no auth (rely on network/firewall isolation, e.g. LAN-only).
+   */
+  statusToken?: string;
 }
 
 /**

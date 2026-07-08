@@ -99,6 +99,8 @@ const program = new Command()
   .option("--throttle-dynamic", "dynamic throttle: pace usage proportionally across each window", false)
   .option("--cig", "show smoking cigarette animation in footer", false)
   .option("--daemon", "run headless as a daemon with a control socket", false)
+  .option("--status-port <port>", "also expose a read-only status+log server over TCP on this port (0/unset = disabled)", "0")
+  .option("--status-token <token>", "require 'Authorization: Bearer <token>' on the TCP status server (default: none)")
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
 
@@ -728,6 +730,8 @@ async function gatherConfig(): Promise<LoopConfig> {
     timeoutSeconds: parseInt(opts.timeout, 10) || 0,
     throttle,
     showCig: opts.cig ?? false,
+    statusPort: parseInt(opts.statusPort, 10) || undefined,
+    statusToken: opts.statusToken || undefined,
   };
 }
 
@@ -797,6 +801,8 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
       dynamic: opts.throttleDynamic ?? false,
     },
     showCig: opts.cig ?? false,
+    statusPort: parseInt(opts.statusPort, 10) || undefined,
+    statusToken: opts.statusToken || undefined,
   };
 }
 
@@ -1476,6 +1482,8 @@ function buildConfigArgs(config: LoopConfig): string[] {
   if (config.enableIde) args.push("--ide");
   if (config.enableChrome) args.push("--chrome");
   if (config.showCig) args.push("--cig");
+  if (config.statusPort) args.push("--status-port", String(config.statusPort));
+  if (config.statusToken) args.push("--status-token", config.statusToken);
   return args;
 }
 

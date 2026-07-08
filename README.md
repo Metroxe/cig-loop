@@ -56,3 +56,28 @@ the greater of the fixed `--delay` floor and the agent's requested `delaySeconds
 Without this, an agent that means "wait 20 minutes" gets re-invoked back-to-back
 in seconds — wasted iterations, tokens, and CI load. Agents that never call
 `ScheduleWakeup` are unaffected; only `--delay` applies.
+
+## Status server (`--status-port`)
+
+Every run already exposes its live state (`/status`) and log tail (`/log`) over a
+local unix control socket. Pass `--status-port <port>` to *also* expose a
+**read-only** version of that over TCP, so a dashboard can poll a headless
+daemon's state from another host:
+
+```bash
+cig-loop -p ./PROMPT.md -i 0 --no-interactive \
+  --log-file ./loop.log --status-port 6092
+```
+
+- `GET /status` → the full daemon state JSON: `phase`
+  (`starting`/`running`/`throttled`/`paused`/`suspended`/`stopping`/`stopped`),
+  `iteration`, `totalIterations`, `cumulative` (cost, tokens, durations),
+  `live` (current iteration's cost / context %), `startedAt`, `stopReason`.
+- `GET /log?lines=N` → the last `N` lines of the log file.
+- `GET /health` → `{ ok, id, phase }` for a cheap liveness ping.
+
+**Read-only by design.** The control verbs (`/stop`, `/pause`, `/skip`,
+`/force-*`) are served *only* on the local unix socket — never over TCP — so
+nothing on the network can drive the loop. The TCP server binds `0.0.0.0`; keep
+the port firewalled to trusted callers, and/or pass `--status-token <token>` to
+require `Authorization: Bearer <token>` on every request.

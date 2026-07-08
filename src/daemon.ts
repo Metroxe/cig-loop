@@ -56,6 +56,9 @@ export class DaemonController {
   readonly runDir: string;
   readonly socketPath: string;
   private server: ReturnType<typeof Bun.serve> | null = null;
+  private statusServer: ReturnType<typeof Bun.serve> | null = null;
+  private readonly statusPort?: number;
+  private readonly statusToken?: string;
   private _pauseRequested = false;
   private _stopRequested = false;
   private _skipRequested = false;
@@ -91,6 +94,9 @@ export class DaemonController {
       live: null,
       showCig: config.showCig,
     };
+
+    this.statusPort = config.statusPort;
+    this.statusToken = config.statusToken;
   }
 
   getState(): DaemonState { return this.state; }
@@ -155,14 +161,64 @@ export class DaemonController {
       // Non-critical
     }
 
-    // Start Unix socket server
+    // Start Unix socket server (local control: all verbs)
     this.server = Bun.serve({
       unix: this.socketPath,
       fetch: (req) => this.handleRequest(req),
     });
 
+    // Optionally start a READ-ONLY TCP status server for a LAN dashboard.
+    // Bound to 0.0.0.0 so it's reachable from the network; control verbs are
+    // never served here (see handleStatusRequest), and an optional bearer
+    // token gates access when the port isn't otherwise firewalled.
+    if (this.statusPort && this.statusPort > 0) {
+      try {
+        this.statusServer = Bun.serve({
+          port: this.statusPort,
+          hostname: "0.0.0.0",
+          fetch: (req) => this.handleStatusRequest(req),
+        });
+      } catch (err) {
+        // Non-fatal: the loop must run even if the status port is taken.
+        console.error(`cig-loop: failed to start status server on port ${this.statusPort}: ${err}`);
+      }
+    }
+
     // Write state file
     await this.persistState();
+  }
+
+  /**
+   * Network-facing handler for the TCP status server. READ-ONLY by design:
+   * only GET /status, GET /log, GET /health. Control verbs (stop/pause/skip/
+   * force-*) are intentionally absent so nothing on the LAN can drive the loop
+   * — those stay on the local unix socket (handleRequest).
+   */
+  private async handleStatusRequest(req: Request): Promise<Response> {
+    if (this.statusToken) {
+      const auth = req.headers.get("authorization");
+      if (auth !== `Bearer ${this.statusToken}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+    }
+
+    const url = new URL(req.url);
+    const path = url.pathname;
+
+    if (req.method === "GET" && path === "/status") {
+      return Response.json(this.state);
+    }
+
+    if (req.method === "GET" && path === "/log") {
+      const lines = parseInt(url.searchParams.get("lines") || "50", 10);
+      return this.getLogTail(lines);
+    }
+
+    if (req.method === "GET" && (path === "/health" || path === "/")) {
+      return Response.json({ ok: true, id: this.id, phase: this.state.phase });
+    }
+
+    return new Response("Not found", { status: 404 });
   }
 
   private async handleRequest(req: Request): Promise<Response> {
@@ -300,6 +356,11 @@ export class DaemonController {
     if (this.server) {
       this.server.stop(true);
       this.server = null;
+    }
+
+    if (this.statusServer) {
+      this.statusServer.stop(true);
+      this.statusServer = null;
     }
 
     // Don't delete the run directory — keep it for history (24h TTL).

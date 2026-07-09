@@ -781,7 +781,9 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
 
   return {
     promptPath,
-    iterations: parseInt(opts.iterations, 10) || 10,
+    // NOT `|| 10`: `-i 0` means "run forever", and `0 || 10` would silently
+    // coerce infinite to 10. Only fall back to 10 when the arg is unparseable.
+    iterations: Number.isNaN(parseInt(opts.iterations, 10)) ? 10 : parseInt(opts.iterations, 10),
     model: opts.model || undefined,
     effort: opts.effort || undefined,
     stopString: opts.stopString || undefined,

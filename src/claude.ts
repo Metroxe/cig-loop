@@ -87,6 +87,17 @@ export async function runClaudeIteration(
   if (config.enableIde) args.push("--ide");
   if (config.enableChrome) args.push("--chrome");
 
+  // Per-agent tool deny-list. Claude's --disallowedTools is variadic, so it's
+  // pushed LAST (end of the args array) with a single comma-joined value: with
+  // nothing following it, the variadic consumes exactly that one arg and can't
+  // swallow the prompt (the same hazard the --mcp-config ordering note guards).
+  // Runs even under --dangerously-skip-permissions, so it's the only structural
+  // per-agent gate — used to make footgun tools (e.g. ScheduleWakeup/Monitor)
+  // uninvokable rather than merely prose-forbidden.
+  if (config.disallowedTools && config.disallowedTools.length > 0) {
+    args.push("--disallowedTools", config.disallowedTools.join(","));
+  }
+
   // Initialize live stats
   const totalIterations = config.iterations;
   const liveStats: LiveIterationStats = {

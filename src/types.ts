@@ -123,6 +123,17 @@ export interface LoopConfig {
    * Undefined = no auth (rely on network/firewall isolation, e.g. LAN-only).
    */
   statusToken?: string;
+  /**
+   * Tool names to DENY to the agent every iteration (threaded to Claude as
+   * `--disallowedTools`). The agent runs with `--dangerously-skip-permissions`,
+   * so every built-in tool is otherwise unconditionally available; this is the
+   * only per-agent tool gate. Empty/undefined = no restriction. Used to remove
+   * footgun tools structurally — e.g. `ScheduleWakeup`/`Monitor` for an agent
+   * whose long-running work must stay foreground/durable, so a "background it and
+   * get woken later" pattern that the iteration boundary would kill is literally
+   * uninvokable rather than only prose-forbidden.
+   */
+  disallowedTools?: string[];
 }
 
 /**

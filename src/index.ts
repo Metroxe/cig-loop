@@ -101,6 +101,7 @@ const program = new Command()
   .option("--daemon", "run headless as a daemon with a control socket", false)
   .option("--status-port <port>", "also expose a read-only status+log server over TCP on this port (0/unset = disabled)", "0")
   .option("--status-token <token>", "require 'Authorization: Bearer <token>' on the TCP status server (default: none)")
+  .option("--disallow-tools <tools>", "comma-separated tool names to deny the agent every iteration (threaded to Claude as --disallowedTools); e.g. 'ScheduleWakeup,Monitor'")
   .option("--no-interactive", "skip interactive prompts, use defaults for missing args")
   .parse(process.argv);
 
@@ -732,7 +733,20 @@ async function gatherConfig(): Promise<LoopConfig> {
     showCig: opts.cig ?? false,
     statusPort: parseInt(opts.statusPort, 10) || undefined,
     statusToken: opts.statusToken || undefined,
+    disallowedTools: parseDisallowedTools(opts.disallowTools),
   };
+}
+
+// Split a comma/space-separated `--disallow-tools` value into a clean tool-name
+// list. Undefined/blank → undefined (no restriction). Tool names never contain
+// commas or spaces, so this is a safe split.
+function parseDisallowedTools(raw: unknown): string[] | undefined {
+  if (typeof raw !== "string") return undefined;
+  const names = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return names.length > 0 ? names : undefined;
 }
 
 async function buildConfigFromOpts(): Promise<LoopConfig> {
@@ -805,6 +819,7 @@ async function buildConfigFromOpts(): Promise<LoopConfig> {
     showCig: opts.cig ?? false,
     statusPort: parseInt(opts.statusPort, 10) || undefined,
     statusToken: opts.statusToken || undefined,
+    disallowedTools: parseDisallowedTools(opts.disallowTools),
   };
 }
 
@@ -840,6 +855,9 @@ function buildRerunCommand(config: LoopConfig): string {
   if (config.enableIde) parts.push("--ide");
   if (config.enableChrome) parts.push("--chrome");
   if (config.showCig) parts.push("--cig");
+  if (config.disallowedTools && config.disallowedTools.length > 0) {
+    parts.push("--disallow-tools", JSON.stringify(config.disallowedTools.join(",")));
+  }
 
   parts.push("--no-interactive");
   parts.push("-i", String(config.iterations));
@@ -1486,6 +1504,9 @@ function buildConfigArgs(config: LoopConfig): string[] {
   if (config.showCig) args.push("--cig");
   if (config.statusPort) args.push("--status-port", String(config.statusPort));
   if (config.statusToken) args.push("--status-token", config.statusToken);
+  if (config.disallowedTools && config.disallowedTools.length > 0) {
+    args.push("--disallow-tools", config.disallowedTools.join(","));
+  }
   return args;
 }
 

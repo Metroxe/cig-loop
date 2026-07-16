@@ -57,6 +57,11 @@ Without this, an agent that means "wait 20 minutes" gets re-invoked back-to-back
 in seconds — wasted iterations, tokens, and CI load. Agents that never call
 `ScheduleWakeup` are unaffected; only `--delay` applies.
 
+A `ScheduleWakeup` call also satisfies the `--continue-string` sentinel gate: the
+tool ends the agent's turn, so the sentinel can never appear in the final text
+block after it. A requested wakeup is therefore treated as an explicit
+continue-and-wait signal, and the loop honors the wait instead of stopping.
+
 ## Status server (`--status-port`)
 
 Every run already exposes its live state (`/status`) and log tail (`/log`) over a

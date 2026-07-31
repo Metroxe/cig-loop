@@ -1,6 +1,17 @@
-import { test, expect, describe } from "bun:test";
-import { getDynamicThreshold, checkThrottle } from "./usage.js";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import {
+  getDynamicThreshold,
+  checkThrottle,
+  readOAuthToken,
+  __resetTokenCacheForTests,
+  detectRateLimitHit,
+  rateLimitBackoffMs,
+  RATE_LIMIT_BACKOFF_SCHEDULE_MS,
+} from "./usage.js";
 import type { UsageData, ThrottleConfig } from "./types.js";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ─── getDynamicThreshold ────────────────────────────────────────────────
 
@@ -252,5 +263,113 @@ describe("checkThrottle static mode", () => {
 
     const hit = checkThrottle(usage, "sonnet", config);
     expect(hit).toBeNull();
+  });
+});
+
+// ─── readOAuthToken ─────────────────────────────────────────────────────
+
+describe("readOAuthToken", () => {
+  let fakeHome: string;
+  let originalHome: string | undefined;
+  let originalEnvToken: string | undefined;
+
+  beforeEach(() => {
+    fakeHome = mkdtempSync(join(tmpdir(), "cig-loop-usage-test-"));
+    originalHome = process.env.HOME;
+    originalEnvToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.HOME = fakeHome;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    __resetTokenCacheForTests();
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    if (originalEnvToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalEnvToken;
+    rmSync(fakeHome, { recursive: true, force: true });
+    __resetTokenCacheForTests();
+  });
+
+  test("falls back to CLAUDE_CODE_OAUTH_TOKEN when ~/.claude/.credentials.json is absent", async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-token-123";
+    const token = await readOAuthToken();
+    expect(token).toBe("env-token-123");
+  });
+
+  test("returns null when neither the credentials file nor the env var is present", async () => {
+    const token = await readOAuthToken();
+    expect(token).toBeNull();
+  });
+
+  test("prefers ~/.claude/.credentials.json over the env var when both are present", async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-token-should-be-ignored";
+    mkdirSync(join(fakeHome, ".claude"), { recursive: true });
+    writeFileSync(
+      join(fakeHome, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "file-token-456" } }),
+    );
+    const token = await readOAuthToken();
+    expect(token).toBe("file-token-456");
+  });
+
+  test("falls back to the env var when the credentials file exists but has no token", async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-token-789";
+    mkdirSync(join(fakeHome, ".claude"), { recursive: true });
+    writeFileSync(join(fakeHome, ".claude", ".credentials.json"), JSON.stringify({}));
+    const token = await readOAuthToken();
+    expect(token).toBe("env-token-789");
+  });
+});
+
+// ─── detectRateLimitHit ─────────────────────────────────────────────────
+
+describe("detectRateLimitHit", () => {
+  test("matches the real weekly-limit message", () => {
+    expect(
+      detectRateLimitHit("You've hit your weekly limit · resets Jul 27, 11am (America/Vancouver)"),
+    ).toBe(true);
+  });
+
+  test("matches a 5-hour variant", () => {
+    expect(
+      detectRateLimitHit("You've hit your 5-hour limit · resets 3:00pm (America/Vancouver)"),
+    ).toBe(true);
+  });
+
+  test("matches when embedded in a larger output blob", () => {
+    expect(
+      detectRateLimitHit("some preceding log noise\nYou've hit your weekly limit · resets Jul 27, 11am\ntrailing"),
+    ).toBe(true);
+  });
+
+  test("does not match ordinary assistant output", () => {
+    expect(detectRateLimitHit("[CONTINUE LOOP]")).toBe(false);
+    expect(detectRateLimitHit("")).toBe(false);
+    expect(detectRateLimitHit("I hit a limit on how many files I could read, so I stopped.")).toBe(false);
+  });
+
+  test("does not match cig-loop's own proactive throttle message (different wording)", () => {
+    expect(detectRateLimitHit("⏸ Throttled: 5h at 92% (limit: 90%). Resuming at Thu 11:00 AM.")).toBe(false);
+  });
+});
+
+// ─── rateLimitBackoffMs ─────────────────────────────────────────────────
+
+describe("rateLimitBackoffMs", () => {
+  test("follows the schedule for consecutive hits 1..N", () => {
+    RATE_LIMIT_BACKOFF_SCHEDULE_MS.forEach((expected, i) => {
+      expect(rateLimitBackoffMs(i + 1)).toBe(expected);
+    });
+  });
+
+  test("holds at the last (longest) schedule entry beyond its length", () => {
+    const last = RATE_LIMIT_BACKOFF_SCHEDULE_MS[RATE_LIMIT_BACKOFF_SCHEDULE_MS.length - 1];
+    expect(rateLimitBackoffMs(RATE_LIMIT_BACKOFF_SCHEDULE_MS.length + 5)).toBe(last);
+    expect(rateLimitBackoffMs(1000)).toBe(last);
+  });
+
+  test("clamps a 0 or negative count to the first entry", () => {
+    expect(rateLimitBackoffMs(0)).toBe(RATE_LIMIT_BACKOFF_SCHEDULE_MS[0]);
+    expect(rateLimitBackoffMs(-3)).toBe(RATE_LIMIT_BACKOFF_SCHEDULE_MS[0]);
   });
 });

@@ -53,24 +53,38 @@ function getClaudeUserAgent(): string {
   return cachedUserAgent;
 }
 
-async function readOAuthToken(): Promise<string | null> {
+/** Test-only: clear the memoized token so a test can exercise a fresh read. */
+export function __resetTokenCacheForTests(): void {
+  cachedToken = undefined;
+}
+
+export async function readOAuthToken(): Promise<string | null> {
   if (cachedToken !== undefined) return cachedToken;
 
   try {
     const home = process.env.HOME || "~";
     const file = Bun.file(`${home}/.claude/.credentials.json`);
-    if (!(await file.exists())) {
-      cachedToken = null;
-      return null;
+    if (await file.exists()) {
+      const content = await file.json();
+      const token = content?.claudeAiOauth?.accessToken;
+      if (typeof token === "string" && token) {
+        cachedToken = token;
+        return cachedToken;
+      }
     }
-    const content = await file.json();
-    const token = content?.claudeAiOauth?.accessToken;
-    cachedToken = typeof token === "string" ? token : null;
-    return cachedToken;
   } catch {
-    cachedToken = null;
-    return null;
+    // fall through to env var
   }
+
+  // Some deployments (e.g. headless/systemd, no interactive `claude login`)
+  // never populate ~/.claude/.credentials.json and instead authenticate via
+  // this env var (same one `claude` itself reads). Without this fallback,
+  // fetchUsage() always returns null on those hosts, so the throttle check
+  // never fires and a real weekly-limit hit becomes a silent, indefinite
+  // Restart=always crash-loop instead of a graceful throttled wait.
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  cachedToken = typeof envToken === "string" && envToken ? envToken : null;
+  return cachedToken;
 }
 
 // ─── API Fetch with Cache ───────────────────────────────────────────────
@@ -549,4 +563,46 @@ export function formatResetTime(resetsAt: string): string {
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m`;
   return "< 1m";
+}
+
+// ─── Reactive Rate-Limit Backstop ───────────────────────────────────────
+//
+// The proactive throttle above (checkThrottle/UsagePoller) depends on the
+// `/api/oauth/usage` endpoint, which needs an OAuth token with `user:profile`
+// scope — not guaranteed for every auth method (e.g. a `CLAUDE_CODE_OAUTH_TOKEN`
+// minted for headless/CI use can 403 there even once readOAuthToken() finds
+// it). When that endpoint isn't usable, a fully-exhausted usage window is
+// invisible to the proactive throttle: Claude Code itself prints a plain-text
+// message and exits immediately, with no assistant turn at all — so
+// --continue-string sentinel detection can't tell this apart from "the agent
+// chose to stop" and the whole loop process exits, leaving nothing but
+// systemd's Restart=always/RestartSec to hammer the same exhausted window
+// every ~30s until it naturally resets (observed: fleet-wide, thousands of
+// restarts over a multi-day weekly-window exhaustion). This reactive check
+// works directly off Claude's own stdout, so it needs no API scope at all.
+
+/**
+ * Matches Claude Code's own message when a usage window (5-hour or weekly)
+ * is fully exhausted, e.g.:
+ *   "You've hit your weekly limit · resets Jul 27, 11am (America/Vancouver)"
+ */
+export const RATE_LIMIT_HIT_PATTERN = /hit your .*\blimit\b.*\bresets\b/i;
+
+export function detectRateLimitHit(output: string): boolean {
+  return RATE_LIMIT_HIT_PATTERN.test(output);
+}
+
+/** Capped backoff schedule (ms) for consecutive reactive rate-limit hits. */
+export const RATE_LIMIT_BACKOFF_SCHEDULE_MS = [
+  60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000,
+] as const;
+
+/**
+ * Backoff duration for the Nth consecutive reactive rate-limit hit
+ * (1-indexed — pass the count *including* the current hit). Grows through
+ * the schedule then holds at the last (longest) entry.
+ */
+export function rateLimitBackoffMs(consecutiveHits: number): number {
+  const idx = Math.min(Math.max(consecutiveHits, 1), RATE_LIMIT_BACKOFF_SCHEDULE_MS.length) - 1;
+  return RATE_LIMIT_BACKOFF_SCHEDULE_MS[idx];
 }

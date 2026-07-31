@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS, freshenUsage, loadDiskCache } from "./usage.js";
+import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS, freshenUsage, loadDiskCache, detectRateLimitHit, rateLimitBackoffMs } from "./usage.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -991,6 +991,7 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
 
   const maxIterations = config.iterations === 0 ? Infinity : config.iterations;
   let stopReason: string | undefined;
+  let consecutiveRateLimitHits = 0;
 
   for (let i = 1; i <= maxIterations; i++) {
     // Check for stop/pause/force-quit signals
@@ -1205,6 +1206,38 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
       );
       footer.writeln("");
     }
+
+    // Reactive rate-limit backstop — must run before sentinel detection.
+    // A fully-exhausted usage window makes Claude Code exit immediately with
+    // no assistant turn at all, so `result.finalResponse` is empty and the
+    // continue-string sentinel below would otherwise read that as "the agent
+    // chose to stop" and exit the whole process. Catch the known message
+    // first and back off in-process instead (see usage.ts for why this can't
+    // just rely on the proactive usage-API throttle).
+    if (!result.success && detectRateLimitHit(result.output)) {
+      consecutiveRateLimitHits++;
+      const backoffMs = rateLimitBackoffMs(consecutiveRateLimitHits);
+      footer.writeln(
+        chalk.yellow(
+          `  ⏸ Detected a usage-limit message in Claude's output (hit #${consecutiveRateLimitHits}) — backing off ${Math.round(backoffMs / 60_000)}m instead of stopping the loop.`,
+        ),
+      );
+      daemon.setPhase("throttled");
+      await daemon.persistState();
+      const deadline = Date.now() + backoffMs;
+      while (Date.now() < deadline) {
+        await Bun.sleep(30_000);
+        if (daemon.isForceQuitRequested || daemon.isStopRequested) break;
+      }
+      if (daemon.isForceQuitRequested || daemon.isStopRequested) {
+        stopReason = "stopped via control";
+        break;
+      }
+      daemon.setPhase("running");
+      i--; // retry the same iteration number
+      continue;
+    }
+    consecutiveRateLimitHits = 0;
 
     // Sentinel detection
     if (config.stopString) {

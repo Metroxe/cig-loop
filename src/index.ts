@@ -21,6 +21,7 @@ import { DaemonController } from "./daemon.js";
 import type { CumulativeStats, InjectableMcp, IterationResult, LoopConfig, McpInjectFile, McpServerInfo, ThrottleConfig } from "./types.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { checkThrottle, formatResetTime, UsagePoller, getThresholdCatchupTime, BUCKET_PERIOD_MS, freshenUsage, loadDiskCache, detectRateLimitHit, rateLimitBackoffMs } from "./usage.js";
+import { waitForInterval } from "./interval-wait.js";
 
 // ─── Subcommand Routing ────────────────────────────────────────────────
 
@@ -1304,7 +1305,32 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     if (waitSeconds > 0 && i < maxIterations) {
       const reason = requestedWait >= config.delaySeconds && requestedWait > 0 ? "ScheduleWakeup" : "delay";
       footer.writeln(chalk.dim(`  Waiting ${waitSeconds}s before next iteration (${reason})...`));
-      await Bun.sleep(waitSeconds * 1000);
+      // NOT a bare `Bun.sleep` for the whole span — see src/interval-wait.ts.
+      // Six of six fleet processes eventually parked forever inside that call.
+      await waitForInterval(waitSeconds * 1000, {
+        onLag: ({ askedMs, actualMs }) =>
+          footer.writeln(
+            chalk.yellow(
+              `  ⚠ inter-iteration timer lagged: asked ${askedMs}ms, took ${actualMs}ms — the event loop is starved`,
+            ),
+          ),
+        onWatchdogKill: ({ totalMs, overrunMs }) => {
+          const msg =
+            `cig-loop WATCHDOG: the ${Math.round(totalMs / 1000)}s inter-iteration wait overran its ` +
+            `deadline by ${Math.round(overrunMs / 1000)}s and the loop is wedged. Exiting so the ` +
+            `supervisor restarts us — this is the known v0.50.1 hang, and a restart is what recovers it.`;
+          try {
+            footer.writeln(chalk.red(`  ${msg}`));
+          } catch {
+            /* the footer may be part of what is wedged */
+          }
+          // Straight to stderr as well: the footer's own renderer is a suspect
+          // in this failure, so the one line that explains the exit must not
+          // depend on it.
+          console.error(msg);
+          daemon.setStopReason("watchdog: inter-iteration wait wedged");
+        },
+      });
     }
   }
 

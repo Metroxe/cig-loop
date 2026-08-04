@@ -71,6 +71,17 @@ export interface CumulativeStats {
   totalCostUsd: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  /**
+   * Cached-context tokens. Agentic coding replays the whole system prompt + tool
+   * definitions every turn, so these dominate real usage — on a long iteration they
+   * routinely run 50-100x `totalInputTokens`. Omitting them (as this struct did until
+   * now) makes the token readout understate consumption by ~97% while `totalCostUsd`,
+   * which comes straight from Claude's own `total_cost_usd`, stays correct. That gap
+   * is how a fleet's reported tokens and reported dollars end up telling different
+   * stories.
+   */
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
 }
 
 /**

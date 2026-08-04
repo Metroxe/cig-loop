@@ -140,7 +140,7 @@ function SessionPreview({ preview }: { preview: SessionsState["preview"] }) {
         <>
           <text><span attributes={TextAttributes.DIM}>{`  Uptime:     ${formatDuration(elapsed)}`}</span></text>
           <text><span attributes={TextAttributes.DIM}>{`  Cost:       ${formatCost(cum.totalCostUsd)}`}</span></text>
-          <text><span attributes={TextAttributes.DIM}>{`  Tokens:     ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out`}</span></text>
+          <text><span attributes={TextAttributes.DIM}>{`  Tokens:     ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out / ${formatNumber(cum.totalCacheReadTokens)} cache-read`}</span></text>
         </>
       ) : (
         <text><span attributes={TextAttributes.DIM}>{"  --"}</span></text>

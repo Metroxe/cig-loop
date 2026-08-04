@@ -64,6 +64,8 @@ class TerminalStore {
         totalCostUsd: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
       },
       usage: null,
       usageFetchError: null,

@@ -933,6 +933,8 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     totalCostUsd: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreationTokens: 0,
   };
 
   // Poller reference — set after activate(), used by cleanup handlers.
@@ -1162,6 +1164,8 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     cumulative.totalCostUsd += result.costUsd || 0;
     cumulative.totalInputTokens += result.tokenUsage?.inputTokens || 0;
     cumulative.totalOutputTokens += result.tokenUsage?.outputTokens || 0;
+    cumulative.totalCacheReadTokens += result.tokenUsage?.cacheReadTokens || 0;
+    cumulative.totalCacheCreationTokens += result.tokenUsage?.cacheCreationTokens || 0;
     footer.setCumulative(cumulative);
     daemon.setCumulative(cumulative);
     daemon.setLive(null);
@@ -1383,7 +1387,7 @@ function printFinalSummary(
   console.log(`  Iterations:  ${totalLabel}`);
   console.log(`  Duration:    ${formatDuration(cumulative.totalDurationMs)}`);
   console.log(`  Cost:        ${formatCost(cumulative.totalCostUsd)}`);
-  console.log(`  Tokens:      ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out`);
+  console.log(`  Tokens:      ${formatNumber(cumulative.totalInputTokens)} in / ${formatNumber(cumulative.totalOutputTokens)} out / ${formatNumber(cumulative.totalCacheReadTokens)} cache-read / ${formatNumber(cumulative.totalCacheCreationTokens)} cache-write`);
   console.log(`  Reason:      ${color(stopReason)}`);
   console.log("");
   console.log(`  ${chalk.dim("Rerun:")}     ${chalk.magenta(buildRerunCommand(config))}`);

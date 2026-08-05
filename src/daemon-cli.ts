@@ -221,7 +221,7 @@ async function cmdStatus(idPrefix?: string): Promise<void> {
     console.log(`    Completed: ${cum.completedIterations}`);
     console.log(`    Duration:  ${formatDuration(cum.totalDurationMs)}`);
     console.log(`    Cost:      ${formatCost(cum.totalCostUsd)}`);
-    console.log(`    Tokens:    ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out`);
+    console.log(`    Tokens:    ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out / ${formatNumber(cum.totalCacheReadTokens)} cache-read`);
 
     if (status.live) {
       const liveElapsed = Date.now() - status.live.startTime;
@@ -507,7 +507,7 @@ function printAttachSummary(status: any, reason?: string): void {
   console.log(`  Iterations:  ${cum.completedIterations}`);
   console.log(`  Duration:    ${formatDuration(cum.totalDurationMs)}`);
   console.log(`  Cost:        ${formatCost(cum.totalCostUsd)}`);
-  console.log(`  Tokens:      ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out`);
+  console.log(`  Tokens:      ${formatNumber(cum.totalInputTokens)} in / ${formatNumber(cum.totalOutputTokens)} out / ${formatNumber(cum.totalCacheReadTokens)} cache-read / ${formatNumber(cum.totalCacheCreationTokens)} cache-write`);
   console.log(`  Reason:      ${color(stopReason)}`);
   console.log("");
 }

@@ -90,6 +90,8 @@ export class DaemonController {
         totalCostUsd: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
       },
       live: null,
       showCig: config.showCig,

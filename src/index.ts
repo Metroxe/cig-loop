@@ -12,6 +12,7 @@ import { Command } from "commander";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
 import { runClaudeIteration } from "./claude.js";
+import { evaluateContinueSentinel } from "./sentinel.js";
 import { formatCost, formatDuration, formatNumber } from "./format.js";
 import { StickyFooter } from "./terminal.js";
 import { BUILTIN_MCPS, getMissingEnvVars } from "./mcps.js";
@@ -1256,10 +1257,22 @@ async function runLoop(config: LoopConfig, daemon: DaemonController): Promise<vo
     }
 
     if (config.continueString) {
-      if (!result.continueStringDetected) {
+      const decision = evaluateContinueSentinel({
+        continueStringDetected: result.continueStringDetected,
+        requestedWakeupSeconds: result.requestedWakeupSeconds,
+      });
+      if (!decision.continue) {
         footer.writeln(chalk.yellow(`  Sentinel: "${config.continueString}" NOT detected - stopping loop`));
         stopReason = `--continue-string "${config.continueString}" not detected on iteration ${i}`;
         break;
+      } else if (decision.reason === "wakeup-override") {
+        // ScheduleWakeup ends the agent's turn, so the sentinel can never be in
+        // the final text block — honor the requested wait instead of stopping.
+        footer.writeln(
+          chalk.dim(
+            `  Sentinel: "${config.continueString}" not detected, but ScheduleWakeup requested (${result.requestedWakeupSeconds}s) — continuing`,
+          ),
+        );
       } else {
         footer.writeln(chalk.dim(`  Sentinel: "${config.continueString}" detected - continuing`));
       }
